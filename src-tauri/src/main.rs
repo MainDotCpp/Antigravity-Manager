@@ -6,7 +6,7 @@ fn main() {
     {
         // Fix for transparent window on some Linux systems
         // See: https://github.com/spacedriveapp/spacedrive/issues/1512#issuecomment-1758550164
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "12");
     }
 
     antigravity_tools_lib::run()
