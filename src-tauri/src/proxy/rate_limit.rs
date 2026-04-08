@@ -512,15 +512,31 @@ impl RateLimitTracker {
     }
     
     /// 获取距离限流重置还有多少秒
+    /// 同时检查账号级锁和所有模型级复合锁，返回最大剩余时间
     pub fn get_reset_seconds(&self, account_id: &str) -> Option<u64> {
-        if let Some(info) = self.get(account_id) {
-            info.reset_time
-                .duration_since(SystemTime::now())
-                .ok()
-                .map(|d| d.as_secs())
-        } else {
-            None
+        let now = SystemTime::now();
+        let prefix = format!("{}:", account_id);
+        let mut max_remaining: Option<u64> = None;
+
+        // 1. 检查账号级锁
+        if let Some(info) = self.limits.get(account_id) {
+            if let Ok(d) = info.reset_time.duration_since(now) {
+                let secs = d.as_secs();
+                max_remaining = Some(max_remaining.map_or(secs, |prev: u64| prev.max(secs)));
+            }
         }
+
+        // 2. 检查所有模型级复合锁 (account_id:model)
+        for entry in self.limits.iter() {
+            if entry.key().starts_with(&prefix) {
+                if let Ok(d) = entry.value().reset_time.duration_since(now) {
+                    let secs = d.as_secs();
+                    max_remaining = Some(max_remaining.map_or(secs, |prev: u64| prev.max(secs)));
+                }
+            }
+        }
+
+        max_remaining
     }
     
     /// 清除过期的限流记录
@@ -550,14 +566,42 @@ impl RateLimitTracker {
         self.limits.remove(account_id).is_some()
     }
     
-    /// 清除所有限流记录 (乐观重置策略)
-    /// 
+    /// 清除短时间限流记录 (乐观重置策略)
+    ///
     /// 用于乐观重置机制,当所有账号都被限流但等待时间很短时,
-    /// 清除所有限流记录以解决时序竞争条件
+    /// 仅清除剩余等待时间 ≤ threshold 秒的记录,保留长时间锁定(如配额耗尽100小时)
+    pub fn clear_short_locks(&self, threshold_secs: u64) {
+        let now = SystemTime::now();
+        let mut cleared = 0u32;
+        let mut preserved = 0u32;
+
+        self.limits.retain(|key, info| {
+            let remaining = info.reset_time
+                .duration_since(now)
+                .unwrap_or(Duration::from_secs(0))
+                .as_secs();
+            if remaining <= threshold_secs {
+                cleared += 1;
+                tracing::debug!("🔄 Optimistic reset: clearing lock {} ({}s remaining)", key, remaining);
+                false
+            } else {
+                preserved += 1;
+                tracing::debug!("🔒 Optimistic reset: preserving lock {} ({}s remaining)", key, remaining);
+                true
+            }
+        });
+
+        tracing::warn!(
+            "🔄 Optimistic reset: cleared {} short lock(s), preserved {} long-term lock(s) (threshold={}s)",
+            cleared, preserved, threshold_secs
+        );
+    }
+
+    /// 清除所有限流记录 (强制重置,仅用于用户手动操作)
     pub fn clear_all(&self) {
         let count = self.limits.len();
         self.limits.clear();
-        tracing::warn!("🔄 Optimistic reset: Cleared all {} rate limit record(s)", count);
+        tracing::warn!("🔄 Force reset: Cleared all {} rate limit record(s)", count);
     }
 }
 

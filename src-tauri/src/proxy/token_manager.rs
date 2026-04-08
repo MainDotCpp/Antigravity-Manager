@@ -1572,13 +1572,14 @@ impl TokenManager {
                                     tokens_snapshot.len()
                                 );
 
-                                // 清除所有限流记录
-                                self.rate_limit_tracker.clear_all();
+                                // 仅清除短时间锁,保留长时间锁定(如配额耗尽)
+                                self.rate_limit_tracker.clear_short_locks(10);
 
-                                // 再次尝试选择账号
+                                // 再次尝试选择账号（需要检查限流状态,因为长时间锁可能仍存在）
                                 let final_token = tokens_snapshot
                                     .iter()
                                     .find(|t| !attempted.contains(&t.account_id)
+                                        && !self.is_rate_limited_sync(&t.account_id, Some(&normalized_target))
                                         && !(quota_protection_enabled && t.protected_models.contains(&normalized_target)));
 
                                 if let Some(t) = final_token {
@@ -1588,9 +1589,17 @@ impl TokenManager {
                                     );
                                     t.clone()
                                 } else {
-                                    return Err(
-                                        "All accounts failed after optimistic reset.".to_string()
-                                    );
+                                    // 所有账号仍被长期锁定,返回最短等待时间
+                                    let min_wait = tokens_snapshot.iter()
+                                        .filter_map(|t| {
+                                            let remaining = self.rate_limit_tracker.get_remaining_wait(&t.account_id, Some(&normalized_target));
+                                            if remaining > 0 { Some(remaining) } else { None }
+                                        })
+                                        .min();
+                                    return Err(match min_wait {
+                                        Some(wait) => format!("All accounts limited (long-term locks preserved). Wait {}s.", wait),
+                                        None => "All accounts failed after optimistic reset.".to_string(),
+                                    });
                                 }
                             }
                         } else {

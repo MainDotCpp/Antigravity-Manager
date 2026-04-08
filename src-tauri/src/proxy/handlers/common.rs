@@ -40,8 +40,16 @@ pub fn determine_retry_strategy(
         429 => {
             // 优先使用服务端返回的 Retry-After
             if let Some(delay_ms) = crate::proxy::upstream::retry::parse_retry_delay(error_text) {
-                let actual_delay = delay_ms.saturating_add(200).min(30_000); // 上限上调至 30s
-                RetryStrategy::FixedDelay(Duration::from_millis(actual_delay))
+                if delay_ms > 60_000 {
+                    // 配额耗尽（如 147 小时）：账号已被 mark_rate_limited_async 锁定，
+                    // 无需等待，立即轮换到下一个账号
+                    tracing::info!("429 with long retryDelay ({}ms), skipping wait and rotating immediately", delay_ms);
+                    RetryStrategy::FixedDelay(Duration::from_millis(200))
+                } else {
+                    // 短期限流（如 TPM/RPM）：使用 API 返回的延迟时间
+                    let actual_delay = delay_ms.saturating_add(200).min(30_000);
+                    RetryStrategy::FixedDelay(Duration::from_millis(actual_delay))
+                }
             } else {
                 // 否则使用线性退避：起始 5s，逐步增加
                 RetryStrategy::LinearBackoff { base_ms: 5000 }
