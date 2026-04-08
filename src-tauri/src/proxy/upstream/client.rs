@@ -51,9 +51,9 @@ const V1_INTERNAL_BASE_URL_SANDBOX: &str =
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal";
 
 const V1_INTERNAL_BASE_URL_FALLBACKS: [&str; 3] = [
-    V1_INTERNAL_BASE_URL_SANDBOX, // 优先级 1: Sandbox (已知有效且稳定)
-    V1_INTERNAL_BASE_URL_DAILY,   // 优先级 2: Daily (备用)
-    V1_INTERNAL_BASE_URL_PROD,    // 优先级 3: Prod (仅作为兜底)
+    V1_INTERNAL_BASE_URL_PROD,    // 优先级 1: Prod (目前 gemini-3 系列的主力稳定节点，无 503 容量问题)
+    V1_INTERNAL_BASE_URL_SANDBOX, // 优先级 2: Sandbox (备用)
+    V1_INTERNAL_BASE_URL_DAILY,   // 优先级 3: Daily (兜底)
 ];
 
 pub struct UpstreamClient {
@@ -301,14 +301,26 @@ impl UpstreamClient {
         }
 
         // 2. Device & Session Identity
-        // Machine ID (Persistent)
-        if let Ok(mid) = machine_uid::get() {
-             if let Ok(mid_val) = header::HeaderValue::from_str(&mid) {
-                 headers.insert("x-machine-id", mid_val);
-             }
+        // [FIX] 不再使用全局真实的 machine_id，而是根据 account_id 生成独一无二的假指纹
+        // 这样可以避免多账号被 Google 关联到同一台机器从而触发 403 VALIDATION_REQUIRED 风控
+        let account_id_str = account_id.unwrap_or("default_account");
+
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+
+        let mut mac_hasher = DefaultHasher::new();
+        format!("machine_{}", account_id_str).hash(&mut mac_hasher);
+        let machine_id = format!("{:016x}", mac_hasher.finish());
+
+        if let Ok(mid_val) = header::HeaderValue::from_str(&machine_id) {
+            headers.insert("x-machine-id", mid_val);
         }
-        // Session ID (Per App Launch)
-        if let Ok(sess_val) = header::HeaderValue::from_str(&crate::constants::SESSION_ID) {
+
+        let mut sess_hasher = DefaultHasher::new();
+        format!("session_{}_{}", account_id_str, crate::constants::SESSION_ID.as_str()).hash(&mut sess_hasher);
+        let session_id = format!("{:016x}", sess_hasher.finish());
+
+        if let Ok(sess_val) = header::HeaderValue::from_str(&session_id) {
             headers.insert("x-vscode-sessionid", sess_val);
         }
 

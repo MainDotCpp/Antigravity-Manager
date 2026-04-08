@@ -460,6 +460,7 @@ impl AxumServer {
             )
             .route("/accounts/current", get(admin_get_current_account))
             .route("/accounts/switch", post(admin_switch_account))
+            .route("/accounts/send-hi", post(admin_send_hi))
             .route("/accounts/refresh", post(admin_refresh_all_quotas))
             .route("/accounts/:accountId", delete(admin_delete_account))
             .route("/accounts/:accountId/bind-device", post(admin_bind_device))
@@ -1449,6 +1450,90 @@ async fn admin_get_proxy_status(
         "base_url": format!("http://127.0.0.1:{}", state.port),
         "active_accounts": active_accounts,
     })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct SendHiPayload {
+    pub email: String,
+    pub model: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct SendHiResponse {
+    pub success: bool,
+    pub message: String,
+    pub reply: Option<String>,
+}
+
+async fn admin_send_hi(
+    State(state): State<AppState>,
+    Json(payload): Json<SendHiPayload>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    // 1. 查找对应邮箱的账号
+    let accounts = crate::modules::account::list_accounts().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: format!("获取账号列表失败: {}", e) }),
+        )
+    })?;
+
+    let account = accounts.into_iter().find(|a| a.email == payload.email).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: format!("未找到邮箱为 {} 的账号", payload.email) }),
+        )
+    })?;
+
+    // 获取代理池 Client
+    let client = state.proxy_pool_manager.get_effective_client(Some(&account.id), 30).await;
+
+    // 2. 根据不同的供应商类型发送请求 (这里假设都是 claude，你可以根据 account 的某个字段判断，如果不支持可以返回错误)
+    let body = serde_json::json!({
+        "model": payload.model,
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    // 如果 token 结构体内有 access_token，使用它
+    let token = account.token.access_token.clone();
+
+    let result = client.post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", token)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await;
+
+    // 3. 解析上游响应
+    match result {
+        Ok(res) => {
+            let status = res.status();
+            match res.text().await {
+                Ok(text) => {
+                    Ok(Json(SendHiResponse {
+                        success: status.is_success(),
+                        message: format!("HTTP Status: {}", status),
+                        reply: Some(text),
+                    }))
+                },
+                Err(e) => {
+                    Ok(Json(SendHiResponse {
+                        success: false,
+                        message: format!("读取响应失败: {}", e),
+                        reply: None,
+                    }))
+                }
+            }
+        },
+        Err(e) => {
+            Ok(Json(SendHiResponse {
+                success: false,
+                message: format!("请求发送失败: {}", e),
+                reply: None,
+            }))
+        }
+    }
 }
 
 async fn admin_start_proxy_service(State(state): State<AppState>) -> impl IntoResponse {
