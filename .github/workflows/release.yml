@@ -9,18 +9,7 @@ jobs:
   build-tauri:
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: "macos-latest"
-            args: "--target aarch64-apple-darwin"
-          - platform: "macos-latest"
-            args: "--target x86_64-apple-darwin"
-          - platform: "macos-latest"
-            args: "--target universal-apple-darwin"
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,7 +17,7 @@ jobs:
       - name: Rust setup
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -48,40 +37,16 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build -- ${{ matrix.args }}
-
-      # macOS 架构重命名 (解决 422 Already Exists)
-      - name: Rename macOS assets for architecture
-        run: |
-          if [[ "${{ matrix.args }}" == *"--target aarch64-apple-darwin"* ]]; then
-            ARCH="aarch64"
-          elif [[ "${{ matrix.args }}" == *"--target x86_64-apple-darwin"* ]]; then
-            ARCH="x64"
-          elif [[ "${{ matrix.args }}" == *"--target universal-apple-darwin"* ]]; then
-            ARCH="universal"
-          else
-            ARCH="unknown"
-          fi
-
-          echo "Detected architecture: $ARCH"
-
-          cd src-tauri/target/*/release/bundle/macos/
-
-          if [ -f "Antigravity Tools.app.tar.gz" ]; then
-            mv "Antigravity Tools.app.tar.gz" "Antigravity Tools_${ARCH}.app.tar.gz"
-            mv "Antigravity Tools.app.tar.gz.sig" "Antigravity Tools_${ARCH}.app.tar.gz.sig"
-            echo "Renamed assets to append Arch: $ARCH"
-          fi
+        run: npm run tauri build -- --target aarch64-apple-darwin
 
       - name: Upload Release Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets-${{ matrix.platform }}-${{ strategy.job-index }}
+          name: release-assets
           path: |
-            src-tauri/target/**/release/bundle/dmg/*.dmg
-            src-tauri/target/**/release/bundle/macos/*.app.tar.gz
-            src-tauri/target/**/release/bundle/macos/*.app.tar.gz.sig
-            src-tauri/target/**/release/bundle/dmg/*.sig
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: warn
 
   publish-release:
@@ -97,7 +62,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-artifacts
-          pattern: "release-assets-*"
+          pattern: "release-assets*"
           merge-multiple: true
 
       - name: Extract Release Notes
@@ -122,43 +87,29 @@ jobs:
           DOWNLOAD_BASE="https://github.com/${REPO}/releases/download/${VERSION}"
           VER="${VERSION#v}"
 
-          read_sig() {
-            local pattern="$1"
-            local sig_file
-            sig_file=$(find all-artifacts -name "$pattern" -type f 2>/dev/null | head -1)
-            if [ -n "$sig_file" ] && [ -f "$sig_file" ]; then
-              cat "$sig_file"
-            else
-              echo ""
-            fi
-          }
-
-          MACOS_AARCH64_SIG=$(read_sig "*_aarch64.app.tar.gz.sig")
-          MACOS_X64_SIG=$(read_sig "*_x64.app.tar.gz.sig")
-
-          echo "Signatures found:"
-          [ -n "$MACOS_AARCH64_SIG" ] && echo "  macOS aarch64: YES" || echo "  macOS aarch64: NO"
-          [ -n "$MACOS_X64_SIG" ] && echo "  macOS x64: YES" || echo "  macOS x64: NO"
+          SIG_FILE=$(find all-artifacts -name "*.app.tar.gz.sig" -type f 2>/dev/null | head -1)
+          if [ -n "$SIG_FILE" ] && [ -f "$SIG_FILE" ]; then
+            MACOS_SIG=$(cat "$SIG_FILE")
+            echo "macOS aarch64 signature: YES"
+          else
+            MACOS_SIG=""
+            echo "macOS aarch64 signature: NO"
+          fi
 
           jq -n \
             --arg version "$VER" \
             --arg notes "See release page for details" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg dl "$DOWNLOAD_BASE" \
-            --arg mac_a64_sig "$MACOS_AARCH64_SIG" \
-            --arg mac_x64_sig "$MACOS_X64_SIG" \
+            --arg mac_sig "$MACOS_SIG" \
             '{
               version: $version,
               notes: $notes,
               pub_date: $pub_date,
               platforms: {
                 "darwin-aarch64": {
-                  url: "\($dl)/Antigravity.Tools_aarch64.app.tar.gz",
-                  signature: $mac_a64_sig
-                },
-                "darwin-x86_64": {
-                  url: "\($dl)/Antigravity.Tools_x64.app.tar.gz",
-                  signature: $mac_x64_sig
+                  url: "\($dl)/Antigravity.Tools.app.tar.gz",
+                  signature: $mac_sig
                 }
               }
             }' > updater.json
