@@ -132,6 +132,15 @@ pub fn map_claude_model_to_gemini(input: &str) -> String {
     input.to_string()
 }
 
+/// 判断是否为 Gemini 高级模型（需要版本化客户端标识才能访问）
+/// 这些模型在使用 "antigravity" 标识时会返回 "not available on this version"，
+/// 需要切换为 "antigravity/1.22.2" 等带版本号的标识
+pub fn is_premium_gemini_model(model: &str) -> bool {
+    let lower = model.to_lowercase();
+    // gemini-3-pro 系列和 gemini-3.1-pro 系列属于高级模型
+    lower.contains("gemini-3-pro") || lower.contains("gemini-3.1-pro")
+}
+
 /// 获取所有内置支持的模型列表关键字
 pub fn get_supported_models() -> Vec<String> {
     CLAUDE_TO_GEMINI.keys().map(|s| s.to_string()).collect()

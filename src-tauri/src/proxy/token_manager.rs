@@ -2616,23 +2616,77 @@ impl TokenManager {
     }
 
     /// Set is_forbidden status for an account (called when proxy encounters 403)
+    /// [CHANGED] 不再永久锁定账号，仅记录日志。403 只触发账号轮换，不做持久化标记。
     pub async fn set_forbidden(&self, account_id: &str, reason: &str) -> Result<(), String> {
-        // [FIX] 调用封装好的模块函数，确保线程安全地更新账号文件和索引
-        crate::modules::account::mark_account_forbidden(account_id, reason)?;
-
-        // Clear sticky session if forbidden
+        // [FIX] 不再调用 mark_account_forbidden，避免永久锁定账号
+        // 仅清除 sticky session，让账号轮换机制自动处理
         self.session_accounts.retain(|_, v| *v != account_id);
 
-        // [FIX] 从内存池中移除账号，避免重试时再次选中
-        self.remove_account(account_id);
-
         tracing::warn!(
-            "🚫 Account {} marked as forbidden (403): {}",
+            "⚠️ Account {} received 403 (not locked, will retry on next rotation): {}",
             account_id,
             truncate_reason(reason, 1000)
         );
 
         Ok(())
+    }
+
+    /// 将 VALIDATION_REQUIRED 的邮箱和验证链接记录到文件
+    /// 文件路径: <data_dir>/validation_required.log
+    pub async fn log_validation_to_file(&self, email: &str, reason: &str) {
+        // 提取验证链接
+        let extracted_url = if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(reason) {
+            let mut url = None;
+            if let Some(details) = parsed_json.pointer("/error/details") {
+                if let Some(arr) = details.as_array() {
+                    for detail in arr {
+                        if let Some(meta) = detail.get("metadata") {
+                            if let Some(v_url) = meta.get("validation_url").and_then(|v| v.as_str()) {
+                                url = Some(v_url.to_string());
+                                break;
+                            }
+                            if let Some(a_url) = meta.get("appeal_url").and_then(|v| v.as_str()) {
+                                url = Some(a_url.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            url
+        } else {
+            let url_regex = regex::Regex::new(r#"https://[^\s"'\\]+"#).unwrap();
+            url_regex.find(reason).map(|m| {
+                m.as_str().to_string().replace("\\u0026", "&")
+            })
+        };
+
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let url_str = extracted_url.as_deref().unwrap_or("(未提取到验证链接)");
+
+        let log_line = format!(
+            "[{}] Email: {} | Validation URL: {}\n",
+            timestamp, email, url_str
+        );
+
+        tracing::warn!(
+            "📋 VALIDATION_REQUIRED logged: email={}, url={}",
+            email, url_str
+        );
+
+        // 写入文件
+        let log_path = self.data_dir.join("validation_required.log");
+        if let Err(e) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                f.write_all(log_line.as_bytes())
+            })
+        {
+            tracing::error!("Failed to write validation log to {:?}: {}", log_path, e);
+        }
     }
 }
 

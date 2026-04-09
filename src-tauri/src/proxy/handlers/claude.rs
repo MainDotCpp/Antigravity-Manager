@@ -1273,30 +1273,27 @@ pub async fn handle_messages(
         // [REMOVED] 不再特殊处理 QUOTA_EXHAUSTED,允许账号轮换
         // 原逻辑会在第一个账号配额耗尽时直接返回,导致"平衡"模式无法切换账号
 
-        // [FIX] 403 时设置 is_forbidden 状态，避免账号被重复选中
+        // [CHANGED] 403 不再锁定账号，仅记录验证信息并临时跳过
         if status_code == 403 {
-            // Check for VALIDATION_REQUIRED error - temporarily block account
+            // Check for VALIDATION_REQUIRED error - log to file + temporarily block
             if error_text.contains("VALIDATION_REQUIRED") ||
                error_text.contains("verify your account") ||
                error_text.contains("validation_url")
             {
                 tracing::warn!(
-                    "[Claude] VALIDATION_REQUIRED detected on account {}, temporarily blocking",
+                    "[Claude] VALIDATION_REQUIRED detected on account {}, logging to file",
                     email
                 );
+                // Log email + verification URL to file for manual handling
+                token_manager.log_validation_to_file(&email, &error_text).await;
+
                 let block_minutes = 10i64;
                 let block_until = chrono::Utc::now().timestamp() + (block_minutes * 60);
                 if let Err(e) = token_manager.set_validation_block_public(&account_id, block_until, &error_text).await {
                     tracing::error!("Failed to set validation block: {}", e);
                 }
             }
-
-            // 设置 is_forbidden 状态
-            if let Err(e) = token_manager.set_forbidden(&account_id, &error_text).await {
-                tracing::error!("Failed to set forbidden status for {}: {}", email, e);
-            } else {
-                tracing::warn!("[Claude] Account {} marked as forbidden due to 403", email);
-            }
+            // [REMOVED] 不再调用 set_forbidden，403 仅触发轮换，不锁定账号
         }
 
         // 确定重试策略

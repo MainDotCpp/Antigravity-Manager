@@ -520,7 +520,12 @@ pub fn wrap_request(
         "requestId": format!("agent/antigravity/{}/{}", &sid[..sid.len().min(8)], message_count),
         "request": inner_request,
         "model": config.final_model,
-        "userAgent": "antigravity",
+        // [FIX] 双标识策略：高级模型使用带版本号的标识
+        "userAgent": if crate::proxy::common::model_mapping::is_premium_gemini_model(&config.final_model) {
+            "antigravity/1.22.2"
+        } else {
+            "antigravity"
+        },
         // [CHANGED v4.1.24] Use "agent" for all non-image requests
         "requestType": if config.request_type == "image_gen" { "image_gen" } else { "agent" }
     });

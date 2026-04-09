@@ -78,9 +78,9 @@ def send_message_streaming(access_token, project_id, model_name="gemini-3-flash"
     headers = {                                                                                                                                                                                                
         "Authorization": f"Bearer {access_token}",        
         "Content-Type": "application/json",                                                                                                                                                                    
-        "User-Agent": "antigravity",
+        "User-Agent": "antigravity/1.22.2",
         "x-client-name": "antigravity",                                                                                                                                                                        
-        "x-client-version": "4.1.31",                     
+        "x-client-version": "1.22.2",                     
         "x-vscode-sessionid": str(uuid.uuid4()),                                                                                                                                                               
     }                                                                                                                                                                                                          
                                                                                                                                                                                                                 
@@ -94,7 +94,8 @@ def send_message_streaming(access_token, project_id, model_name="gemini-3-flash"
             response = cffi_requests.post(url, headers=headers, json=data, timeout=30, impersonate="chrome120")                                                                                                
             print(f"📥 HTTP 状态码: {response.status_code}")                                                                                                                                                   
                                                                                                                                                                                                                 
-            if response.status_code == 200:                                                                                                                                                                    
+            if response.status_code == 200:         
+                print(f"{response.text}")                                                                                                                                                           
                 print(f"✅ 账号目前在这个端点不受风控限制，随时可用。")                                                                                                                                        
                 return                                                                                                                                                                                         
 
@@ -137,7 +138,7 @@ if __name__ == "__main__":
         sys.exit(1)                                                                                                                                                                                            
 
     refresh_token = sys.argv[1]                                                                                                                                                                                
-    model_name = sys.argv[2] if len(sys.argv) > 2 else "gemini-3-flash"
+    model_name = sys.argv[2] if len(sys.argv) > 2 else "gemini-3.1-pro-low"
                                                                                                                                                                                                                 
     print("============ Cloud Code 风控探测验证器 ============")
     access_token = refresh_to_access_token(refresh_token)                                                                                                                                                      

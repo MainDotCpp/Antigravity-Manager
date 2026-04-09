@@ -278,29 +278,13 @@ pub async fn handle_warmup(
             } else {
                 let error_text = response.text().await.unwrap_or_default();
 
-                // [FIX] 预热阶段检测到 403 时，标记账号为 forbidden，避免无效账号继续参与轮询
-                // 如果 account_id 为空（直接传入 access_token 的场景），通过 email 从索引中找到 ID
+                // [CHANGED] 预热阶段检测到 403 时，不再锁定账号，仅记录日志
                 if status_code == 403 {
-                    let resolved_account_id = if !account_id.is_empty() {
-                        account_id.clone()
-                    } else {
-                        // 尝试通过 email 查找账号 ID
-                        crate::modules::account::find_account_id_by_email(&req.email)
-                            .unwrap_or_default()
-                    };
-
-                    if !resolved_account_id.is_empty() {
-                        warn!(
-                            "[Warmup-API] 403 Forbidden detected for {}, marking account as forbidden",
-                            req.email
-                        );
-                        let _ = crate::modules::account::mark_account_forbidden(&resolved_account_id, &error_text);
-                    } else {
-                        warn!(
-                            "[Warmup-API] 403 Forbidden detected for {} but could not resolve account_id, skipping mark",
-                            req.email
-                        );
-                    }
+                    warn!(
+                        "[Warmup-API] 403 Forbidden detected for {}, skipping (account not locked)",
+                        req.email
+                    );
+                    // [REMOVED] 不再调用 mark_account_forbidden
                 }
 
                 (

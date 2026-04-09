@@ -667,19 +667,22 @@ pub async fn handle_chat_completions(
 
         // 只有 403 (权限/地区限制) 和 401 (认证失效) 触发账号轮换
         if status_code == 403 || status_code == 401 {
-            // [NEW] 403 时设置 is_forbidden 状态，避免 Claude Code 会话退出
+            // [CHANGED] 403 不再锁定账号，仅记录验证信息
             if status_code == 403 {
                 if let Some(acc_id) = token_manager.get_account_id_by_email(&email) {
-                    // Check for VALIDATION_REQUIRED error - temporarily block account
+                    // Check for VALIDATION_REQUIRED error - temporarily block + log to file
                     if error_text.contains("VALIDATION_REQUIRED")
                         || error_text.contains("verify your account")
                         || error_text.contains("validation_url")
                     {
                         tracing::warn!(
-                            "[OpenAI] VALIDATION_REQUIRED detected on account {}, temporarily blocking",
+                            "[OpenAI] VALIDATION_REQUIRED detected on account {}, logging to file",
                             email
                         );
-                        // Block for 10 minutes (default, configurable via config file)
+                        // Log email + verification URL to file for manual handling
+                        token_manager.log_validation_to_file(&email, &error_text).await;
+
+                        // Temporarily block for 10 minutes (allows auto-recovery)
                         let block_minutes = 10i64;
                         let block_until = chrono::Utc::now().timestamp() + (block_minutes * 60);
 
@@ -690,11 +693,7 @@ pub async fn handle_chat_completions(
                             tracing::error!("Failed to set validation block: {}", e);
                         }
                     }
-
-                    // 设置 is_forbidden 状态
-                    if let Err(e) = token_manager.set_forbidden(&acc_id, &error_text).await {
-                        tracing::error!("Failed to set forbidden status: {}", e);
-                    }
+                    // [REMOVED] 不再调用 set_forbidden，403 仅触发轮换，不锁定账号
                 }
             }
 

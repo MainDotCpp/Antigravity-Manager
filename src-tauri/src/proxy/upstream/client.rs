@@ -270,6 +270,13 @@ impl UpstreamClient {
         // [NEW] Get client based on account (cached in proxy pool manager)
         let client = self.get_client(account_id).await;
 
+        // [NEW] 从请求体中提取模型名称，判断是否需要切换客户端标识
+        let request_model = body
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let is_premium = crate::proxy::common::model_mapping::is_premium_gemini_model(request_model);
+
         // 构建 Headers (所有端点复用)
         let mut headers = header::HeaderMap::new();
         headers.insert(
@@ -282,43 +289,45 @@ impl UpstreamClient {
                 .map_err(|e| e.to_string())?,
         );
 
-        headers.insert(
-            header::USER_AGENT,
-            header::HeaderValue::from_str(&self.get_user_agent().await).unwrap_or_else(|e| {
-                tracing::warn!("Invalid User-Agent header value, using fallback: {}", e);
-                header::HeaderValue::from_static("antigravity")
-            }),
-        );
-
-        // [ENHANCED] 注入 Antigravity 官方客户端关键特征 Headers
-        // 1. Client Identity
-        headers.insert(
-            "x-client-name",
-            header::HeaderValue::from_static("antigravity"),
-        );
-        if let Ok(ver) = header::HeaderValue::from_str(&crate::constants::CURRENT_VERSION) {
-            headers.insert("x-client-version", ver);
+        // [FIX] 双标识策略：
+        // - 默认使用 "antigravity" 标识（不触发手机验证）
+        // - Gemini 高级模型使用带版本号的标识（才能访问 gemini-3-pro/3.1-pro 系列）
+        if is_premium {
+            headers.insert(
+                header::USER_AGENT,
+                header::HeaderValue::from_static("antigravity/1.22.2"),
+            );
+            headers.insert(
+                "x-client-name",
+                header::HeaderValue::from_static("antigravity"),
+            );
+            headers.insert(
+                "x-client-version",
+                header::HeaderValue::from_static("1.22.2"),
+            );
+            tracing::debug!(
+                model = %request_model,
+                "Using premium client identity (antigravity/1.22.2) for Gemini pro model"
+            );
+        } else {
+            headers.insert(
+                header::USER_AGENT,
+                header::HeaderValue::from_static("antigravity"),
+            );
+            headers.insert(
+                "x-client-name",
+                header::HeaderValue::from_static("antigravity"),
+            );
+            if let Ok(ver) = header::HeaderValue::from_str(&crate::constants::CURRENT_VERSION) {
+                headers.insert("x-client-version", ver);
+            }
         }
 
         // 2. Device & Session Identity
-        // [FIX] 不再使用全局真实的 machine_id，而是根据 account_id 生成独一无二的假指纹
-        // 这样可以避免多账号被 Google 关联到同一台机器从而触发 403 VALIDATION_REQUIRED 风控
-        let account_id_str = account_id.unwrap_or("default_account");
-
-        use std::hash::{Hash, Hasher};
-        use std::collections::hash_map::DefaultHasher;
-
-        let mut mac_hasher = DefaultHasher::new();
-        format!("machine_{}", account_id_str).hash(&mut mac_hasher);
-        let machine_id = format!("{:016x}", mac_hasher.finish());
-
-        if let Ok(mid_val) = header::HeaderValue::from_str(&machine_id) {
-            headers.insert("x-machine-id", mid_val);
-        }
-
-        let mut sess_hasher = DefaultHasher::new();
-        format!("session_{}_{}", account_id_str, crate::constants::SESSION_ID.as_str()).hash(&mut sess_hasher);
-        let session_id = format!("{:016x}", sess_hasher.finish());
+        // [FIX] 完全对齐 Python 脚本的 Headers 特征
+        // - 移除多余的真实物理机和虚拟哈希 x-machine-id (脚本证明这会引发额外验证)
+        // - 严格生成标准的 UUID 作为 x-vscode-sessionid
+        let session_id = uuid::Uuid::new_v4().to_string();
 
         if let Ok(sess_val) = header::HeaderValue::from_str(&session_id) {
             headers.insert("x-vscode-sessionid", sess_val);
