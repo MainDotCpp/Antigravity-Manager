@@ -117,6 +117,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "PERCUMA",
+        "no_project_id": "Tiada Project ID",
+        "no_project_id_tooltip": "Akaun ini tidak mendapat Project ID rasmi, menggunakan sandaran",
         "edit_label": "Sunting Label",
         "custom_label_placeholder": "Masukkan label tersuai",
         "label_updated": "Label dikemas kini",

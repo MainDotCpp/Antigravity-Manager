@@ -42,6 +42,9 @@ pub struct QuotaData {
     /// 模型淘汰重定向规则表 (old_model_id -> new_model_id)
     #[serde(default)]
     pub model_forwarding_rules: std::collections::HashMap<String, String>,
+    /// 账号是否拥有官方 project_id (loadCodeAssist 是否返回了 cloudaicompanionProject)
+    #[serde(default)]
+    pub has_project_id: bool,
 }
 
 impl QuotaData {
@@ -53,6 +56,7 @@ impl QuotaData {
             forbidden_reason: None,
             subscription_tier: None,
             model_forwarding_rules: std::collections::HashMap::new(),
+            has_project_id: false,
         }
     }
 

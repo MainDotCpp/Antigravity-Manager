@@ -121,6 +121,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "FREE",
+        "no_project_id": "無 Project ID",
+        "no_project_id_tooltip": "該帳號未取得官方 Project ID，使用 fallback",
         "edit_label": "編輯標籤",
         "custom_label_placeholder": "輸入自訂標籤",
         "label_updated": "標籤已更新",

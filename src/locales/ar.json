@@ -119,6 +119,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "FREE",
+        "no_project_id": "بدون Project ID",
+        "no_project_id_tooltip": "لم يحصل هذا الحساب على Project ID رسمي، يتم استخدام البديل",
         "edit_label": "تعديل التصنيف",
         "custom_label_placeholder": "أدخل تصنيفًا مخصصًا",
         "label_updated": "تم تحديث التصنيف",

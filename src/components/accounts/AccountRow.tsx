@@ -1,4 +1,4 @@
-import { ArrowRightLeft, RefreshCw, Trash2, Download, Info, Lock, Ban, Diamond, Gem, Circle, Clock, ToggleLeft, ToggleRight, Fingerprint } from 'lucide-react';
+import { ArrowRightLeft, RefreshCw, Trash2, Download, Info, Lock, Ban, Diamond, Gem, Circle, Clock, ToggleLeft, ToggleRight, Fingerprint, AlertTriangle } from 'lucide-react';
 import { Account } from '../../types/account';
 import { getQuotaColor, formatTimeRemaining, getTimeRemainingColor } from '../../utils/format';
 import { cn } from '../../utils/cn';
@@ -154,6 +154,13 @@ function AccountRow({ account, selected, onSelect, isCurrent, isRefreshing, isSw
                                 );
                             }
                         })()}
+                        {/* 无 Project ID 徽章 */}
+                        {account.quota && account.quota.has_project_id === false && (
+                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 text-[10px] font-bold shadow-sm border border-amber-200/50 dark:border-amber-800/50 cursor-default" title={t('accounts.no_project_id_tooltip', '该账号未获取到官方 Project ID，使用 fallback')}>
+                                <AlertTriangle className="w-2.5 h-2.5" />
+                                {t('accounts.no_project_id')}
+                            </span>
+                        )}
                     </div>
                 </div>
             </td>

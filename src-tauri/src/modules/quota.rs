@@ -160,6 +160,11 @@ async fn fetch_project_id(access_token: &str, email: &str, account_id: Option<&s
                         }
                     }
                     
+                    // Default to FREE if no tier info returned (accounts without paid/current tier are free)
+                    if subscription_tier.is_none() {
+                        subscription_tier = Some("FREE".to_string());
+                    }
+
                     if let Some(ref tier) = subscription_tier {
                         crate::modules::logger::log_info(&format!(
                             "📊 [{}] Subscription identified successfully: {}", email, tier
@@ -179,7 +184,7 @@ async fn fetch_project_id(access_token: &str, email: &str, account_id: Option<&s
         }
     }
     
-    (None, None)
+    (None, Some("FREE".to_string()))
 }
 
 /// Unified entry point for fetching account quota
@@ -203,14 +208,13 @@ pub async fn fetch_quota_with_cache(
         fetch_project_id(access_token, email, account_id).await
     };
     
-    // We keep project_id to store in the DB, but we NO LONGER force inject it into payload if it's absent
-    
+    // Use fallback project_id when account is ineligible for official cloudaicompanionProject,
+    // so fetchAvailableModels still returns real quota data instead of default 100%.
+    let effective_project_id = project_id.clone()
+        .unwrap_or_else(|| "bamboo-precept-lgxtn".to_string());
+
     let client = create_standard_client(account_id).await;
-    let payload = if let Some(ref pid) = project_id {
-        json!({ "project": pid })
-    } else {
-        json!({}) // Empty payload fallback
-    };
+    let payload = json!({ "project": effective_project_id });
     
     let mut last_error: Option<AppError> = None;
 
@@ -303,9 +307,10 @@ pub async fn fetch_quota_with_cache(
                     }
                 }
                 
-                // Set subscription tier
+                // Set subscription tier and project_id status
                 quota_data.subscription_tier = subscription_tier.clone();
-                
+                quota_data.has_project_id = project_id.is_some();
+
                 return Ok((quota_data, project_id.clone()));
             },
             Err(e) => {

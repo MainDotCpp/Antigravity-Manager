@@ -38,6 +38,7 @@ export interface QuotaData {
     forbidden_reason?: string;
     subscription_tier?: string;  // 订阅类型: FREE/PRO/ULTRA
     model_forwarding_rules?: Record<string, string>; // 废弃模型转发表
+    has_project_id?: boolean; // 账号是否拥有官方 project_id
 }
 
 export interface ModelQuota {

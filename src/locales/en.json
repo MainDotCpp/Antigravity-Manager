@@ -127,6 +127,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "FREE",
+        "no_project_id": "No Project ID",
+        "no_project_id_tooltip": "This account has no official Project ID, using fallback",
         "edit_label": "Edit Label",
         "custom_label_placeholder": "Enter custom label",
         "label_updated": "Label updated",

@@ -118,6 +118,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "GRÁTIS",
+        "no_project_id": "Sem Project ID",
+        "no_project_id_tooltip": "Esta conta não obteve um Project ID oficial, usando fallback",
         "edit_label": "Editar rótulo",
         "custom_label_placeholder": "Digite um rótulo personalizado",
         "label_updated": "Rótulo atualizado",

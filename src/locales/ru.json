@@ -120,6 +120,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "FREE",
+        "no_project_id": "Нет Project ID",
+        "no_project_id_tooltip": "Этот аккаунт не получил официальный Project ID, используется запасной",
         "edit_label": "Редактировать метку",
         "custom_label_placeholder": "Введите пользовательскую метку",
         "label_updated": "Метка обновлена",

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ArrowRightLeft, RefreshCw, Trash2, Download, Info, Lock, Ban, Diamond, Gem, Circle, ToggleLeft, ToggleRight, Fingerprint, Sparkles, Tag, X, Check, Clock, Bot } from 'lucide-react';
+import { ArrowRightLeft, RefreshCw, Trash2, Download, Info, Lock, Ban, Diamond, Gem, Circle, ToggleLeft, ToggleRight, Fingerprint, Sparkles, Tag, X, Check, Clock, Bot, AlertTriangle } from 'lucide-react';
 import { Account } from '../../types/account';
 import { cn } from '../../utils/cn';
 import { useTranslation } from 'react-i18next';
@@ -198,6 +198,13 @@ function AccountCard({ account, selected, onSelect, isCurrent: propIsCurrent, is
                                     );
                                 }
                             })()}
+                            {/* 无 Project ID 徽章 */}
+                            {account.quota && account.quota.has_project_id === false && (
+                                <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 text-[9px] font-bold shadow-sm border border-amber-200/50 dark:border-amber-800/50 cursor-default" title={t('accounts.no_project_id_tooltip', '该账号未获取到官方 Project ID，使用 fallback')}>
+                                    <AlertTriangle className="w-2.5 h-2.5" />
+                                    {t('accounts.no_project_id')}
+                                </span>
+                            )}
                             {/* 自定义标签 */}
                             {account.custom_label && (
                                 <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 text-[9px] font-bold shadow-sm border border-orange-200/50 dark:border-orange-800/50">

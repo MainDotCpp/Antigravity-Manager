@@ -120,6 +120,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "FREE",
+        "no_project_id": "Project ID 없음",
+        "no_project_id_tooltip": "이 계정은 공식 Project ID를 받지 못했습니다. 폴백 사용 중",
         "edit_label": "라벨 편집",
         "custom_label_placeholder": "사용자 정의 라벨 입력",
         "label_updated": "라벨이 업데이트되었습니다",

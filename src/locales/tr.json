@@ -118,6 +118,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "ÜCRETSİZ",
+        "no_project_id": "Project ID Yok",
+        "no_project_id_tooltip": "Bu hesap resmi Project ID alamadı, yedek kullanılıyor",
         "edit_label": "Etiketi Düzenle",
         "custom_label_placeholder": "Özel etiket girin",
         "label_updated": "Etiket güncellendi",

@@ -120,6 +120,8 @@
         "ultra": "ULTRA",
         "pro": "PRO",
         "free": "MIỄN PHÍ",
+        "no_project_id": "Không có Project ID",
+        "no_project_id_tooltip": "Tài khoản này không nhận được Project ID chính thức, đang dùng dự phòng",
         "edit_label": "Chỉnh sửa nhãn",
         "custom_label_placeholder": "Nhập nhãn tùy chỉnh",
         "label_updated": "Đã cập nhật nhãn",
