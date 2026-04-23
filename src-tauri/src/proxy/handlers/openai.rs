@@ -1857,7 +1857,7 @@ pub async fn handle_images_generations_internal(
                     Err(e) => {
                         last_error = format!("Token error: {}", e);
                         if attempt < max_attempts - 1 {
-                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                             continue;
                         }
                         break;
@@ -2252,7 +2252,7 @@ pub async fn handle_images_edits(
                     Err(e) => {
                         last_error = format!("Token error: {}", e);
                         if attempt < max_attempts - 1 {
-                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                             continue;
                         }
                         break;

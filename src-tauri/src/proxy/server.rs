@@ -141,7 +141,7 @@ struct AccountResponse {
     proxy_disabled: bool,
     proxy_disabled_reason: Option<String>,
     proxy_disabled_at: Option<i64>,
-    protected_models: Vec<String>,
+    protected_models: std::collections::HashMap<String, crate::models::account::ModelProtection>,
     /// [NEW] 403 验证阻止状态
     validation_blocked: bool,
     validation_blocked_until: Option<i64>,
@@ -187,7 +187,7 @@ fn to_account_response(
         proxy_disabled: account.proxy_disabled,
         proxy_disabled_reason: account.proxy_disabled_reason.clone(),
         proxy_disabled_at: account.proxy_disabled_at,
-        protected_models: account.protected_models.iter().cloned().collect(),
+        protected_models: account.protected_models.clone(),
         quota: account.quota.as_ref().map(|q| QuotaResponse {
             models: q
                 .models
@@ -462,6 +462,7 @@ impl AxumServer {
             .route("/accounts/switch", post(admin_switch_account))
             .route("/accounts/send-hi", post(admin_send_hi))
             .route("/accounts/refresh", post(admin_refresh_all_quotas))
+            .route("/accounts/health-probe", post(admin_health_probe))
             .route("/accounts/:accountId", delete(admin_delete_account))
             .route("/accounts/:accountId/bind-device", post(admin_bind_device))
             .route(
@@ -850,7 +851,7 @@ async fn admin_list_accounts(
                 proxy_disabled: acc.proxy_disabled,
                 proxy_disabled_reason: acc.proxy_disabled_reason,
                 proxy_disabled_at: acc.proxy_disabled_at,
-                protected_models: acc.protected_models.into_iter().collect(),
+                protected_models: acc.protected_models.clone(),
                 validation_blocked: acc.validation_blocked,
                 validation_blocked_until: acc.validation_blocked_until,
                 validation_blocked_reason: acc.validation_blocked_reason,
@@ -927,7 +928,7 @@ async fn admin_get_current_account(
                 proxy_disabled: acc.proxy_disabled,
                 proxy_disabled_reason: acc.proxy_disabled_reason,
                 proxy_disabled_at: acc.proxy_disabled_at,
-                protected_models: acc.protected_models.into_iter().collect(),
+                protected_models: acc.protected_models.clone(),
                 validation_blocked: acc.validation_blocked,
                 validation_blocked_until: acc.validation_blocked_until,
                 validation_blocked_reason: acc.validation_blocked_reason,
@@ -1463,6 +1464,42 @@ pub struct SendHiResponse {
     pub success: bool,
     pub message: String,
     pub reply: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HealthProbeRequest {
+    account_ids: Option<Vec<String>>,
+    model_filter: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+struct HealthProbeResponse {
+    results: Vec<crate::proxy::token_manager::AccountProbeResult>,
+}
+
+async fn admin_health_probe(
+    State(state): State<AppState>,
+    Json(payload): Json<HealthProbeRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let account_ids = payload.account_ids.unwrap_or_else(|| {
+        state.token_manager.get_all_account_ids()
+    });
+
+    if account_ids.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: "No accounts available for probing".to_string() }),
+        ));
+    }
+
+    tracing::info!("[HealthProbe] Starting probe for {} accounts", account_ids.len());
+
+    let results = state
+        .token_manager
+        .health_probe_accounts_batch(account_ids, payload.model_filter)
+        .await;
+
+    Ok(Json(HealthProbeResponse { results }))
 }
 
 async fn admin_send_hi(

@@ -1287,10 +1287,9 @@ pub async fn handle_messages(
                 // Log email + verification URL to file for manual handling
                 token_manager.log_validation_to_file(&email, &error_text).await;
 
-                let block_minutes = 10i64;
-                let block_until = chrono::Utc::now().timestamp() + (block_minutes * 60);
-                if let Err(e) = token_manager.set_validation_block_public(&account_id, block_until, &error_text).await {
-                    tracing::error!("Failed to set validation block: {}", e);
+                // 将触发验证的模型加入 protected_models（持久化）
+                if let Err(e) = token_manager.add_model_protection(&account_id, &normalized_model, "validation_required", None).await {
+                    tracing::error!("Failed to add model protection for VALIDATION_REQUIRED: {}", e);
                 }
             }
             // [REMOVED] 不再调用 set_forbidden，403 仅触发轮换，不锁定账号
@@ -1764,18 +1763,16 @@ async fn call_gemini_sync(
     let gemini_body = crate::proxy::mappers::claude::transform_claude_request_in(request, &project_id, false, Some(account_id.as_str()), trace_id, token_obj.as_ref())
         .map_err(|e| format!("Failed to transform request: {}", e))?;
     
-    // Call Gemini API
-    let upstream_url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-        model
-    );
-    
-    debug!("[{}] Calling Gemini API: {}", trace_id, model);
-    
+    // Call via cloudcode-pa v1internal (same endpoint as normal proxy requests)
+    let upstream_url = "https://cloudcode-pa.googleapis.com/v1internal:generateContent";
+
+    debug!("[{}] Calling Gemini API via v1internal: {}", trace_id, model);
+
     let response = reqwest::Client::new()
-        .post(&upstream_url)
+        .post(upstream_url)
         .header("Authorization", format!("Bearer {}", access_token))
         .header("Content-Type", "application/json")
+        .header("User-Agent", "antigravity")
         .json(&gemini_body)
         .send()
         .await

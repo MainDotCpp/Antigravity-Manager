@@ -1,6 +1,50 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use super::{token::TokenData, quota::QuotaData};
+
+/// 模型保护（锁定）元数据
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelProtection {
+    pub reason: String, // 锁定原因，例如 "validation_required", "quota_exhausted", "manual"
+    pub locked_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unlocks_at: Option<i64>, // 可为空，用于表示什么时间后由程序自动解除
+}
+
+/// 兼容读取旧版本的 protected_models
+fn deserialize_protected_models<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, ModelProtection>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let mut map = HashMap::new();
+
+    if let Some(arr) = value.as_array() {
+        // 旧格式是纯数组: ["gemini-pro", "gemini-flash"]
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                map.insert(
+                    s.to_string(),
+                    ModelProtection {
+                        reason: "legacy_conversion".to_string(),
+                        locked_at: chrono::Utc::now().timestamp(),
+                        unlocks_at: None,
+                    },
+                );
+            }
+        }
+    } else if let Some(obj) = value.as_object() {
+        // 新格式是结构体对象
+        for (k, v) in obj {
+            if let Ok(protection) = serde_json::from_value(v.clone()) {
+                map.insert(k.clone(), protection);
+            }
+        }
+    }
+    Ok(map)
+}
 
 /// 账号数据结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,8 +79,8 @@ pub struct Account {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_disabled_at: Option<i64>,
     /// 受配额保护禁用的模型列表 [NEW #621]
-    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
-    pub protected_models: HashSet<String>,
+    #[serde(default, deserialize_with = "deserialize_protected_models", skip_serializing_if = "HashMap::is_empty")]
+    pub protected_models: HashMap<String, ModelProtection>,
     /// [NEW] 403 验证阻止状态 (VALIDATION_REQUIRED)
     #[serde(default)]
     pub validation_blocked: bool,
@@ -79,7 +123,7 @@ impl Account {
             proxy_disabled: false,
             proxy_disabled_reason: None,
             proxy_disabled_at: None,
-            protected_models: HashSet::new(),
+            protected_models: HashMap::new(),
             validation_blocked: false,
             validation_blocked_until: None,
             validation_blocked_reason: None,
@@ -120,8 +164,8 @@ pub struct AccountSummary {
     #[serde(default)]
     pub proxy_disabled: bool,
     /// 受保护的模型列表 [NEW] 供 UI 显示锁定图标
-    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
-    pub protected_models: HashSet<String>,
+    #[serde(default, deserialize_with = "deserialize_protected_models", skip_serializing_if = "HashMap::is_empty")]
+    pub protected_models: HashMap<String, ModelProtection>,
     pub created_at: i64,
     pub last_used: i64,
 }

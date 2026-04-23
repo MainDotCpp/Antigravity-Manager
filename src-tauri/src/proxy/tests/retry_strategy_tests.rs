@@ -18,41 +18,37 @@ fn test_retry_strategy_404() {
 #[test]
 fn test_retry_strategy_429_no_delay() {
     let strategy = determine_retry_strategy(429, "rate limited", false);
-    assert!(
-        matches!(strategy, RetryStrategy::LinearBackoff { base_ms: 5000 }),
-        "Expected LinearBackoff {{ base_ms: 5000 }}, got {:?}",
-        strategy
-    );
+    match strategy {
+        RetryStrategy::FixedDelay(d) => assert_eq!(d, Duration::from_millis(200)),
+        other => panic!("Expected FixedDelay(200ms), got {:?}", other),
+    }
 }
 
 #[test]
 fn test_retry_strategy_503() {
     let strategy = determine_retry_strategy(503, "", false);
-    assert!(
-        matches!(strategy, RetryStrategy::ExponentialBackoff { base_ms: 10000, max_ms: 60000 }),
-        "Expected ExponentialBackoff {{ base_ms: 10000, max_ms: 60000 }}, got {:?}",
-        strategy
-    );
+    match strategy {
+        RetryStrategy::FixedDelay(d) => assert_eq!(d, Duration::from_millis(200)),
+        other => panic!("Expected FixedDelay(200ms), got {:?}", other),
+    }
 }
 
 #[test]
 fn test_retry_strategy_529() {
     let strategy = determine_retry_strategy(529, "", false);
-    assert!(
-        matches!(strategy, RetryStrategy::ExponentialBackoff { base_ms: 10000, max_ms: 60000 }),
-        "Expected ExponentialBackoff {{ base_ms: 10000, max_ms: 60000 }}, got {:?}",
-        strategy
-    );
+    match strategy {
+        RetryStrategy::FixedDelay(d) => assert_eq!(d, Duration::from_millis(200)),
+        other => panic!("Expected FixedDelay(200ms), got {:?}", other),
+    }
 }
 
 #[test]
 fn test_retry_strategy_500() {
     let strategy = determine_retry_strategy(500, "", false);
-    assert!(
-        matches!(strategy, RetryStrategy::LinearBackoff { base_ms: 3000 }),
-        "Expected LinearBackoff {{ base_ms: 3000 }}, got {:?}",
-        strategy
-    );
+    match strategy {
+        RetryStrategy::FixedDelay(d) => assert_eq!(d, Duration::from_millis(200)),
+        other => panic!("Expected FixedDelay(200ms), got {:?}", other),
+    }
 }
 
 #[test]
@@ -113,7 +109,7 @@ fn test_retry_strategy_400_no_signature() {
 
 #[test]
 fn test_rotate_account_true_cases() {
-    for status in [429, 401, 403, 404, 500] {
+    for status in [429, 401, 403, 404, 500, 503, 529] {
         assert!(
             should_rotate_account(status),
             "Expected should_rotate_account({}) == true",
@@ -124,7 +120,7 @@ fn test_rotate_account_true_cases() {
 
 #[test]
 fn test_rotate_account_false_cases() {
-    for status in [400, 503, 529, 200, 502] {
+    for status in [400, 200, 502] {
         assert!(
             !should_rotate_account(status),
             "Expected should_rotate_account({}) == false",

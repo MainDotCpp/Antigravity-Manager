@@ -109,7 +109,7 @@ function AccountCard({ account, selected, onSelect, isCurrent: propIsCurrent, is
 
     const isModelProtected = (key?: string) => {
         if (!key) return false;
-        return account.protected_models?.includes(key);
+        return key in (account.protected_models ?? {});
     };
 
     return (

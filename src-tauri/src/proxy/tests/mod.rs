@@ -5,3 +5,4 @@ pub mod quota_protection;
 pub mod ultra_priority_tests;
 pub mod retry_strategy_tests;
 pub mod rate_limit_404_tests;
+pub mod health_probe_tests;

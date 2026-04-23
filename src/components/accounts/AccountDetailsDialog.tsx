@@ -1,4 +1,4 @@
-import { X, Clock, AlertCircle, Bot } from 'lucide-react';
+import { X, Clock, AlertCircle, Bot, Lock, Unlock } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { Account } from '../../types/account';
 import { formatDate } from '../../utils/format';
@@ -66,18 +66,66 @@ export default function AccountDetailsDialog({ account, onClose }: AccountDetail
                 {/* Content */}
                 <div className="p-6 max-h-[60vh] overflow-y-auto">
                     {/* Protected Models Section */}
-                    {account.protected_models && account.protected_models.length > 0 && (
+                    {account.protected_models && Object.keys(account.protected_models).length > 0 && (
                         <div className="mb-6">
                             <h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                                <AlertCircle size={12} className="text-amber-500" />
+                                <Lock size={12} className="text-amber-500" />
                                 {t('accounts.details.protected_models')}
                             </h4>
-                            <div className="flex flex-wrap gap-2">
-                                {account.protected_models.map(model => (
-                                    <span key={model} className="px-2 py-1 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 text-[11px] font-mono border border-amber-100 dark:border-amber-900/40 rounded-md">
-                                        {model}
-                                    </span>
-                                ))}
+                            <div className="flex flex-col gap-2">
+                                {Object.entries(account.protected_models).map(([model, protection]) => {
+                                    const now = Math.floor(Date.now() / 1000);
+                                    const hasUnlockTime = protection.unlocks_at != null;
+                                    const remaining = hasUnlockTime ? (protection.unlocks_at! - now) : 0;
+                                    const isExpired = hasUnlockTime && remaining <= 0;
+
+                                    const reasonLabel = protection.reason === 'validation_required' ? t('accounts.protection.validation_required', 'Validation Required')
+                                        : protection.reason === 'quota_exhausted' ? t('accounts.protection.quota_exhausted', 'Quota Exhausted')
+                                        : protection.reason === 'manual' ? t('accounts.protection.manual', 'Manual Lock')
+                                        : protection.reason === 'legacy_conversion' ? t('accounts.protection.legacy', 'Legacy')
+                                        : protection.reason;
+
+                                    const formatCountdown = (secs: number) => {
+                                        if (secs <= 0) return t('accounts.protection.expired', 'Expired');
+                                        const h = Math.floor(secs / 3600);
+                                        const m = Math.floor((secs % 3600) / 60);
+                                        if (h > 0) return `${h}h ${m}m`;
+                                        return `${m}m`;
+                                    };
+
+                                    return (
+                                        <div key={model} className="flex items-center justify-between px-3 py-2 bg-amber-50/50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-lg">
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                <Lock size={12} className="text-amber-500 shrink-0" />
+                                                <span className="text-[11px] font-mono font-medium text-amber-700 dark:text-amber-400 truncate">{model}</span>
+                                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                                                    protection.reason === 'validation_required' ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' :
+                                                    protection.reason === 'quota_exhausted' ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400' :
+                                                    'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
+                                                }`}>{reasonLabel}</span>
+                                            </div>
+                                            <div className="flex items-center gap-2 shrink-0">
+                                                {hasUnlockTime && !isExpired && (
+                                                    <span className="flex items-center gap-1 text-[10px] font-mono text-amber-600 dark:text-amber-400">
+                                                        <Clock size={10} />
+                                                        {formatCountdown(remaining)}
+                                                    </span>
+                                                )}
+                                                {isExpired && (
+                                                    <span className="flex items-center gap-1 text-[10px] font-mono text-green-600 dark:text-green-400">
+                                                        <Unlock size={10} />
+                                                        {t('accounts.protection.expired', 'Expired')}
+                                                    </span>
+                                                )}
+                                                {!hasUnlockTime && (
+                                                    <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500">
+                                                        {t('accounts.protection.no_auto_unlock', 'Manual')}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
                     )}

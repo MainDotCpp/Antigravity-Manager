@@ -1,3 +1,9 @@
+export interface ModelProtection {
+    reason: string; // "validation_required" | "quota_exhausted" | "manual" | "legacy_conversion"
+    locked_at: number;
+    unlocks_at?: number | null;
+}
+
 export interface Account {
     id: string;
     email: string;
@@ -12,7 +18,7 @@ export interface Account {
     proxy_disabled?: boolean;
     proxy_disabled_reason?: string;
     proxy_disabled_at?: number;
-    protected_models?: string[];
+    protected_models?: Record<string, ModelProtection>;
     custom_label?: string;  // 用户自定义标签
     validation_blocked?: boolean;
     validation_blocked_until?: number;

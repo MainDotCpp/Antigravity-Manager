@@ -7,6 +7,7 @@ interface AccountState {
     currentAccount: Account | null;
     loading: boolean;
     error: string | null;
+    isProbing: boolean;
 
     // Actions
     fetchAccounts: () => Promise<void>;
@@ -31,6 +32,7 @@ interface AccountState {
     warmUpAccounts: () => Promise<string>;
     warmUpAccount: (accountId: string) => Promise<string>;
     updateAccountLabel: (accountId: string, label: string) => Promise<void>;
+    healthProbeAccounts: (accountIds?: string[], modelFilter?: string[]) => Promise<accountService.HealthProbeResponse>;
 }
 
 export const useAccountStore = create<AccountState>((set, get) => ({
@@ -38,6 +40,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     currentAccount: null,
     loading: false,
     error: null,
+    isProbing: false,
 
     fetchAccounts: async () => {
         set({ loading: true, error: null });
@@ -310,6 +313,20 @@ export const useAccountStore = create<AccountState>((set, get) => ({
         } catch (error) {
             console.error('[AccountStore] Update label failed:', error);
             throw error;
+        }
+    },
+
+    healthProbeAccounts: async (accountIds?: string[], modelFilter?: string[]) => {
+        set({ isProbing: true });
+        try {
+            const result = await accountService.healthProbeAccounts(accountIds, modelFilter);
+            await get().fetchAccounts();
+            return result;
+        } catch (error) {
+            console.error('[AccountStore] Health probe failed:', error);
+            throw error;
+        } finally {
+            set({ isProbing: false });
         }
     },
 }));

@@ -47,7 +47,7 @@ fn create_test_token(
         project_id: None,
         subscription_tier: tier.map(|s| s.to_string()),
         remaining_quota,
-        protected_models: HashSet::new(),
+        protected_models: std::collections::HashMap::new(),
         health_score,
         reset_time,
         validation_blocked: false,

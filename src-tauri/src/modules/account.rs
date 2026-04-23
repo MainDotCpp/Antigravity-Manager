@@ -231,7 +231,7 @@ mod tests {
                     name: Some("User One".to_string()),
                     disabled: false,
                     proxy_disabled: false,
-                    protected_models: HashSet::new(),
+                    protected_models: HashMap::new(),
                     created_at: now,
                     last_used: now,
                 },
@@ -241,7 +241,7 @@ mod tests {
                     name: None,
                     disabled: true,
                     proxy_disabled: true,
-                    protected_models: HashSet::new(),
+                    protected_models: HashMap::new(),
                     created_at: now - 100,
                     last_used: now - 50,
                 },
@@ -1413,15 +1413,32 @@ pub fn update_account_quota(account_id: &str, quota: QuotaData) -> Result<(), St
                     let min_pct = group_min_percentage.get(std_id).cloned().unwrap_or(100);
 
                     if min_pct <= threshold {
-                        if !account.protected_models.contains(std_id) {
+                        if !account.protected_models.contains_key(std_id) {
                             crate::modules::logger::log_info(&format!(
                                 "[Quota] Triggering model protection: {} (Group: {} Min: {}% <= Thres: {}%)",
                                 account.email, std_id, min_pct, threshold
                             ));
-                            account.protected_models.insert(std_id.clone());
+                            // 从 quota.models 中提取该模型组的 reset_time 作为 unlocks_at
+                            let unlocks_at = q.models.iter()
+                                .filter(|m| {
+                                    crate::proxy::common::model_mapping::normalize_to_standard_id(&m.name)
+                                        .as_deref() == Some(std_id.as_str())
+                                })
+                                .filter(|m| !m.reset_time.is_empty())
+                                .filter_map(|m| {
+                                    chrono::DateTime::parse_from_rfc3339(&m.reset_time)
+                                        .ok()
+                                        .map(|dt| dt.timestamp())
+                                })
+                                .min();
+                            account.protected_models.insert(std_id.clone(), crate::models::account::ModelProtection {
+                                reason: "quota_exhausted".to_string(),
+                                locked_at: chrono::Utc::now().timestamp(),
+                                unlocks_at,
+                            });
                         }
                     } else {
-                        if account.protected_models.contains(std_id) {
+                        if account.protected_models.contains_key(std_id) {
                             crate::modules::logger::log_info(&format!(
                                 "[Quota] Model protection recovered: {} (Group: {} Min: {}% > Thres: {}%)",
                                 account.email, std_id, min_pct, threshold

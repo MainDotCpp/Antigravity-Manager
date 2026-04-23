@@ -45,7 +45,7 @@ import {
     Bot,
     AlertTriangle,
 } from 'lucide-react';
-import { Account } from '../../types/account';
+import { Account, ModelProtection } from '../../types/account';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../utils/cn';
 
@@ -159,37 +159,31 @@ function getModelAliases(modelId: string): string[] {
     return MODEL_ID_ALIASES[modelId] || [modelId];
 }
 
-function isModelProtected(protectedModels: string[] | undefined, modelName: string): boolean {
-    if (!protectedModels || protectedModels.length === 0) return false;
+function isModelProtected(protectedModels: Record<string, ModelProtection> | undefined, modelName: string): boolean {
+    if (!protectedModels || Object.keys(protectedModels).length === 0) return false;
     const lowerName = modelName.toLowerCase();
 
-    // Helper to check if any model in the group is protected
     const isGroupProtected = (group: string[]) => {
-        return group.some(m => protectedModels.includes(m));
+        return group.some(m => m in protectedModels);
     };
 
-    // UI Column Keys Mapping (for backward compatibility with hardcoded UI calls)
     if (lowerName === 'gemini-pro') return isGroupProtected(MODEL_GROUPS.GEMINI_PRO);
     if (lowerName === 'gemini-flash') return isGroupProtected(MODEL_GROUPS.GEMINI_FLASH);
     if (lowerName === 'claude-sonnet') return isGroupProtected(MODEL_GROUPS.CLAUDE);
 
-    // 1. Gemini Pro Group
     if (MODEL_GROUPS.GEMINI_PRO.some(m => lowerName === m)) {
         return isGroupProtected(MODEL_GROUPS.GEMINI_PRO);
     }
 
-    // 2. Claude Group
     if (MODEL_GROUPS.CLAUDE.some(m => lowerName === m)) {
         return isGroupProtected(MODEL_GROUPS.CLAUDE);
     }
 
-    // 3. Gemini Flash Group
     if (MODEL_GROUPS.GEMINI_FLASH.some(m => lowerName === m)) {
         return isGroupProtected(MODEL_GROUPS.GEMINI_FLASH);
     }
 
-    // 兜底直接检查 (Strict check for exact match or normalized ID)
-    return protectedModels.includes(lowerName);
+    return lowerName in protectedModels;
 }
 
 // ============================================================================

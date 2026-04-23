@@ -99,7 +99,7 @@ function CurrentAccount({ account, onSwitch }: CurrentAccountProps) {
                     <div className="space-y-1.5">
                         <div className="flex justify-between items-baseline">
                             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-1">
-                                {(account.protected_models?.includes('gemini-3-pro-high') || account.protected_models?.includes('gemini-3.1-pro-high')) && <Lock className="w-2.5 h-2.5 text-rose-500" />}
+                                {('gemini-3-pro-high' in (account.protected_models ?? {}) || 'gemini-3.1-pro-high' in (account.protected_models ?? {})) && <Lock className="w-2.5 h-2.5 text-rose-500" />}
                                 Gemini 3.1 Pro
                             </span>
                             <div className="flex items-center gap-2">
@@ -129,7 +129,7 @@ function CurrentAccount({ account, onSwitch }: CurrentAccountProps) {
                     <div className="space-y-1.5">
                         <div className="flex justify-between items-baseline">
                             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-1">
-                                {account.protected_models?.includes('gemini-3-pro-image') && <Lock className="w-2.5 h-2.5 text-rose-500" />}
+                                {'gemini-3-pro-image' in (account.protected_models ?? {}) && <Lock className="w-2.5 h-2.5 text-rose-500" />}
                                 Gemini 3 Pro Image
                             </span>
                             <div className="flex items-center gap-2">
@@ -160,7 +160,7 @@ function CurrentAccount({ account, onSwitch }: CurrentAccountProps) {
                     <div className="space-y-1.5">
                         <div className="flex justify-between items-baseline">
                             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-1">
-                                {account.protected_models?.includes('gemini-3-flash') && <Lock className="w-2.5 h-2.5 text-rose-500" />}
+                                {'gemini-3-flash' in (account.protected_models ?? {}) && <Lock className="w-2.5 h-2.5 text-rose-500" />}
                                 Gemini 3 Flash
                             </span>
                             <div className="flex items-center gap-2">
@@ -191,7 +191,7 @@ function CurrentAccount({ account, onSwitch }: CurrentAccountProps) {
                     <div className="space-y-1.5">
                         <div className="flex justify-between items-baseline">
                             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 flex items-center gap-1">
-                                {account.protected_models?.includes('claude') && <Lock className="w-2.5 h-2.5 text-rose-500" />}
+                                {'claude' in (account.protected_models ?? {}) && <Lock className="w-2.5 h-2.5 text-rose-500" />}
                                 Claude 系列
                             </span>
                             <div className="flex items-center gap-2">

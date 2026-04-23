@@ -891,6 +891,36 @@ pub async fn warm_up_account(account_id: String) -> Result<String, String> {
     modules::quota::warm_up_account(&account_id).await
 }
 
+/// 健康探测账号模型
+#[tauri::command]
+pub async fn health_probe_accounts(
+    account_ids: Option<Vec<String>>,
+    model_filter: Option<Vec<String>>,
+    proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
+) -> Result<serde_json::Value, String> {
+    let instance_lock = proxy_state.instance.read().await;
+    let instance = instance_lock
+        .as_ref()
+        .ok_or_else(|| "Proxy service not running".to_string())?;
+
+    let ids = account_ids.unwrap_or_else(|| {
+        instance.token_manager.get_all_account_ids()
+    });
+
+    if ids.is_empty() {
+        return Err("No accounts available for probing".to_string());
+    }
+
+    tracing::info!("[HealthProbe] Starting probe for {} accounts", ids.len());
+
+    let results = instance
+        .token_manager
+        .health_probe_accounts_batch(ids, model_filter)
+        .await;
+
+    Ok(serde_json::json!({ "results": results }))
+}
+
 /// 更新账号自定义标签
 #[tauri::command]
 pub async fn update_account_label(account_id: String, label: String) -> Result<(), String> {

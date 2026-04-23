@@ -200,6 +200,33 @@ export async function warmUpAccount(accountId: string): Promise<string> {
     return await invoke('warm_up_account', { accountId });
 }
 
+// Health Probe
+export interface ModelProbeResult {
+    model: string;
+    status: 'ok' | 'locked' | 'skipped' | 'error';
+    message: string;
+}
+
+export interface AccountProbeResult {
+    account_id: string;
+    email: string;
+    results: ModelProbeResult[];
+}
+
+export interface HealthProbeResponse {
+    results: AccountProbeResult[];
+}
+
+export async function healthProbeAccounts(
+    accountIds?: string[],
+    modelFilter?: string[],
+): Promise<HealthProbeResponse> {
+    return await invoke('health_probe_accounts', {
+        accountIds: accountIds ?? null,
+        modelFilter: modelFilter ?? null,
+    });
+}
+
 // 导出账号相关
 export interface ExportAccountItem {
     email: string;

@@ -184,7 +184,7 @@ function AccountRow({ account, selected, onSelect, isCurrent, isRefreshing, isSw
                             )}
                             <div className="relative z-10 w-full flex items-center text-[10px] font-mono leading-none">
                                 <span className="w-[64px] text-gray-500 dark:text-gray-400 font-bold pr-1 flex items-center gap-1" title="Gemini 3.1 Pro">
-                                    {(account.protected_models?.includes('gemini-3-pro-high') || account.protected_models?.includes('gemini-3.1-pro-high')) && <Lock className="w-2.5 h-2.5 text-rose-500 shrink-0 z-10" />}
+                                    {('gemini-3-pro-high' in (account.protected_models ?? {}) || 'gemini-3.1-pro-high' in (account.protected_models ?? {})) && <Lock className="w-2.5 h-2.5 text-rose-500 shrink-0 z-10" />}
                                     <span className="truncate">G3.1 Pro</span>
                                 </span>
                                 <div className="flex-1 flex justify-center">
@@ -216,7 +216,7 @@ function AccountRow({ account, selected, onSelect, isCurrent, isRefreshing, isSw
                             )}
                             <div className="relative z-10 w-full flex items-center text-[10px] font-mono leading-none">
                                 <span className="w-[64px] text-gray-500 dark:text-gray-400 font-bold pr-1 flex items-center gap-1" title="Gemini 3 Flash">
-                                    {account.protected_models?.includes('gemini-3-flash') && <Lock className="w-2.5 h-2.5 text-rose-500 shrink-0 z-10" />}
+                                    {'gemini-3-flash' in (account.protected_models ?? {}) && <Lock className="w-2.5 h-2.5 text-rose-500 shrink-0 z-10" />}
                                     <span className="truncate">G3 Flash</span>
                                 </span>
                                 <div className="flex-1 flex justify-center">
@@ -248,7 +248,7 @@ function AccountRow({ account, selected, onSelect, isCurrent, isRefreshing, isSw
                             )}
                             <div className="relative z-10 w-full flex items-center text-[10px] font-mono leading-none">
                                 <span className="w-[64px] text-gray-500 dark:text-gray-400 font-bold pr-1 flex items-center gap-1" title="Gemini 3 Pro Image">
-                                    {account.protected_models?.includes('gemini-3-pro-image') && <Lock className="w-2.5 h-2.5 text-rose-500 shrink-0 z-10" />}
+                                    {'gemini-3-pro-image' in (account.protected_models ?? {}) && <Lock className="w-2.5 h-2.5 text-rose-500 shrink-0 z-10" />}
                                     <span className="truncate">G3 Image</span>
                                 </span>
                                 <div className="flex-1 flex justify-center">
@@ -280,7 +280,7 @@ function AccountRow({ account, selected, onSelect, isCurrent, isRefreshing, isSw
                             )}
                             <div className="relative z-10 w-full flex items-center text-[10px] font-mono leading-none">
                                 <span className="w-[64px] text-gray-500 dark:text-gray-400 font-bold pr-1 flex items-center gap-1" title="Claude Series">
-                                    {account.protected_models?.includes('claude') && <Lock className="w-2.5 h-2.5 text-rose-500 shrink-0 z-10" />}
+                                    {'claude' in (account.protected_models ?? {}) && <Lock className="w-2.5 h-2.5 text-rose-500 shrink-0 z-10" />}
                                     <span className="truncate">Claude</span>
                                 </span>
                                 <div className="flex-1 flex justify-center">

@@ -32,7 +32,11 @@ mod tests {
             project_id: Some("test-project".to_string()),
             subscription_tier: Some("PRO".to_string()),
             remaining_quota,
-            protected_models: protected_models.iter().map(|s| s.to_string()).collect(),
+            protected_models: protected_models.iter().map(|s| (s.to_string(), crate::models::account::ModelProtection {
+                reason: "quota_exhausted".to_string(),
+                locked_at: chrono::Utc::now().timestamp(),
+                unlocks_at: None,
+            })).collect(),
             health_score: 1.0,
             reset_time: None,
             validation_blocked: false,
@@ -108,7 +112,7 @@ mod tests {
 
         assert_eq!(normalized, "claude");
         assert!(
-            token.protected_models.contains(&normalized),
+            token.protected_models.contains_key(&normalized),
             "claude-opus-4-5-thinking 归一化后应该匹配 protected_models 中的 claude"
         );
 
@@ -118,7 +122,7 @@ mod tests {
             normalize_to_standard_id(target_model_2).unwrap_or_else(|| target_model_2.to_string());
 
         assert!(
-            token.protected_models.contains(&normalized_2),
+            token.protected_models.contains_key(&normalized_2),
             "claude-thinking 归一化后应该匹配 protected_models"
         );
 
@@ -128,7 +132,7 @@ mod tests {
             normalize_to_standard_id(target_model_3).unwrap_or_else(|| target_model_3.to_string());
 
         assert!(
-            !token.protected_models.contains(&normalized_3),
+            !token.protected_models.contains_key(&normalized_3),
             "gemini-3-flash 不应该匹配 claude"
         );
     }
@@ -168,7 +172,7 @@ mod tests {
         // 过滤掉被保护的账号
         let available_accounts: Vec<_> = tokens
             .iter()
-            .filter(|t| !t.protected_models.contains(&normalized_target))
+            .filter(|t| !t.protected_models.contains_key(&normalized_target))
             .collect();
 
         // 验证：账号 1 被过滤（因为 claude 被保护）
@@ -191,7 +195,7 @@ mod tests {
 
         let available_accounts_2: Vec<_> = tokens
             .iter()
-            .filter(|t| !t.protected_models.contains(&normalized_target_2))
+            .filter(|t| !t.protected_models.contains_key(&normalized_target_2))
             .collect();
 
         // 验证：账号 3 被过滤（因为 gemini-3-flash 被保护）
@@ -243,7 +247,7 @@ mod tests {
 
         let available_accounts: Vec<_> = tokens
             .iter()
-            .filter(|t| !t.protected_models.contains(&normalized_target))
+            .filter(|t| !t.protected_models.contains_key(&normalized_target))
             .collect();
 
         // 所有账号都被过滤，应该返回 0
@@ -368,7 +372,7 @@ mod tests {
         // 按顺序选择第一个可用账号
         let selected = tokens
             .iter()
-            .find(|t| !t.protected_models.contains(&normalized_target));
+            .find(|t| !t.protected_models.contains_key(&normalized_target));
 
         // 验证：account-high 被跳过，选择 account-mid
         assert!(selected.is_some());
@@ -398,7 +402,7 @@ mod tests {
         let normalized_claude = normalize_to_standard_id("claude-opus-4-5-thinking")
             .unwrap_or_else(|| "claude-opus-4-5-thinking".to_string());
         assert!(
-            token.protected_models.contains(&normalized_claude),
+            token.protected_models.contains_key(&normalized_claude),
             "Claude 请求应该被保护"
         );
 
@@ -406,7 +410,7 @@ mod tests {
         let normalized_gemini = normalize_to_standard_id("gemini-3-flash")
             .unwrap_or_else(|| "gemini-3-flash".to_string());
         assert!(
-            !token.protected_models.contains(&normalized_gemini),
+            !token.protected_models.contains_key(&normalized_gemini),
             "Gemini 请求不应该被保护"
         );
     }
@@ -443,12 +447,12 @@ mod tests {
 
         // 启用配额保护时，账号应该被过滤
         let is_protected_when_enabled =
-            config_enabled.enabled && token.protected_models.contains(&normalized_target);
+            config_enabled.enabled && token.protected_models.contains_key(&normalized_target);
         assert!(is_protected_when_enabled, "启用时应该被保护");
 
         // 禁用配额保护时，即使 protected_models 中有值，也不过滤
         let is_protected_when_disabled =
-            config_disabled.enabled && token.protected_models.contains(&normalized_target);
+            config_disabled.enabled && token.protected_models.contains_key(&normalized_target);
         assert!(!is_protected_when_disabled, "禁用时不应该被保护");
     }
 
@@ -504,7 +508,7 @@ mod tests {
 
         let available_for_claude: Vec<_> = accounts
             .iter()
-            .filter(|a| !config.enabled || !a.protected_models.contains(&target_claude))
+            .filter(|a| !config.enabled || !a.protected_models.contains_key(&target_claude))
             .collect();
 
         // 账号 A 和 C 被过滤，B 和 D 可用
@@ -522,7 +526,7 @@ mod tests {
 
         let available_for_gemini: Vec<_> = accounts
             .iter()
-            .filter(|a| !config.enabled || !a.protected_models.contains(&target_gemini))
+            .filter(|a| !config.enabled || !a.protected_models.contains_key(&target_gemini))
             .collect();
 
         // 账号 C 和 D 被过滤，A 和 B 可用
@@ -540,7 +544,7 @@ mod tests {
 
         let available_for_unmonitored: Vec<_> = accounts
             .iter()
-            .filter(|a| !config.enabled || !a.protected_models.contains(&target_unmonitored))
+            .filter(|a| !config.enabled || !a.protected_models.contains_key(&target_unmonitored))
             .collect();
 
         // 未被监控的模型 (Gemini 2.5 Flash 实际上被归一化为已监控的 3-flash)
@@ -566,7 +570,7 @@ mod tests {
             .unwrap_or_else(|| "claude-opus-4-5-thinking".to_string());
 
         assert!(
-            !token.protected_models.contains(&target),
+            !token.protected_models.contains_key(&target),
             "空 protected_models 不应该匹配任何模型"
         );
     }
@@ -628,13 +632,17 @@ mod tests {
 
         // === 请求 2: 继续使用账号 A ===
         // 账号 A 仍然可用
-        assert!(!account_a.protected_models.contains(&normalized_target));
+        assert!(!account_a.protected_models.contains_key(&normalized_target));
 
         // === 系统触发配额刷新，发现账号 A 配额低于阈值 ===
         // 模拟配额刷新后，account_a 的 claude 被加入保护列表
         account_a
             .protected_models
-            .insert("claude".to_string());
+            .insert("claude".to_string(), crate::models::account::ModelProtection {
+                reason: "quota_exhausted".to_string(),
+                locked_at: chrono::Utc::now().timestamp(),
+                unlocks_at: None,
+            });
 
         // === 请求 3: 尝试使用账号 A，但被配额保护 ===
         let accounts = vec![account_a.clone()]; // 只有一个账号
@@ -642,14 +650,14 @@ mod tests {
         // 检查绑定的账号是否被保护
         let bound_id = session_bindings.get(session_id).unwrap();
         let bound_account = accounts.iter().find(|a| &a.account_id == bound_id).unwrap();
-        let is_protected = bound_account.protected_models.contains(&normalized_target);
+        let is_protected = bound_account.protected_models.contains_key(&normalized_target);
 
         assert!(is_protected, "账号 A 应该被配额保护");
 
         // 尝试找其他可用账号
         let available_accounts: Vec<_> = accounts
             .iter()
-            .filter(|a| !a.protected_models.contains(&normalized_target))
+            .filter(|a| !a.protected_models.contains_key(&normalized_target))
             .collect();
 
         // 没有可用账号
@@ -660,7 +668,7 @@ mod tests {
         let error_message = if available_accounts.is_empty() {
             if accounts
                 .iter()
-                .all(|a| a.protected_models.contains(&normalized_target))
+                .all(|a| a.protected_models.contains_key(&normalized_target))
             {
                 format!(
                     "All accounts quota-protected for model {}",
@@ -700,12 +708,16 @@ mod tests {
         session_bindings.insert(session_id.to_string(), account_a.account_id.clone());
 
         // === 请求 2: 继续使用账号 A ===
-        assert!(!account_a.protected_models.contains(&normalized_target));
+        assert!(!account_a.protected_models.contains_key(&normalized_target));
 
         // === 系统触发配额刷新，账号 A 被保护 ===
         account_a
             .protected_models
-            .insert("claude".to_string());
+            .insert("claude".to_string(), crate::models::account::ModelProtection {
+                reason: "quota_exhausted".to_string(),
+                locked_at: chrono::Utc::now().timestamp(),
+                unlocks_at: None,
+            });
 
         // === 请求 3: 账号 A 被保护，应该解绑并切换到账号 B ===
         let accounts = vec![account_a.clone(), account_b.clone()];
@@ -713,7 +725,7 @@ mod tests {
         // 检查绑定的账号
         let bound_id = session_bindings.get(session_id).unwrap();
         let bound_account = accounts.iter().find(|a| &a.account_id == bound_id).unwrap();
-        let is_protected = bound_account.protected_models.contains(&normalized_target);
+        let is_protected = bound_account.protected_models.contains_key(&normalized_target);
 
         assert!(is_protected, "账号 A 应该被配额保护");
 
@@ -725,7 +737,7 @@ mod tests {
         // 寻找其他可用账号
         let available_accounts: Vec<_> = accounts
             .iter()
-            .filter(|a| !a.protected_models.contains(&normalized_target))
+            .filter(|a| !a.protected_models.contains_key(&normalized_target))
             .collect();
 
         // 应该有账号 B 可用
@@ -769,14 +781,18 @@ mod tests {
         if account_on_disk.remaining_quota.unwrap_or(100) <= threshold {
             account_on_disk
                 .protected_models
-                .insert("claude".to_string());
+                .insert("claude".to_string(), crate::models::account::ModelProtection {
+                reason: "quota_exhausted".to_string(),
+                locked_at: chrono::Utc::now().timestamp(),
+                unlocks_at: None,
+            });
         }
 
         // 验证磁盘数据已更新
         assert!(
             account_on_disk
                 .protected_models
-                .contains("claude"),
+                .contains_key("claude"),
             "磁盘上的账号应该已被保护"
         );
 
@@ -784,7 +800,7 @@ mod tests {
         assert!(
             !tokens_in_memory[0]
                 .protected_models
-                .contains("claude"),
+                .contains_key("claude"),
             "内存中的账号还没被同步"
         );
 
@@ -795,7 +811,7 @@ mod tests {
         assert!(
             tokens_in_memory[0]
                 .protected_models
-                .contains("claude"),
+                .contains_key("claude"),
             "同步后内存中的账号应该被保护"
         );
 
@@ -805,7 +821,7 @@ mod tests {
 
         let available: Vec<_> = tokens_in_memory
             .iter()
-            .filter(|t| !t.protected_models.contains(&target))
+            .filter(|t| !t.protected_models.contains_key(&target))
             .collect();
 
         assert_eq!(available.len(), 0, "同步后账号应该被过滤");
@@ -830,7 +846,7 @@ mod tests {
         let accounts = vec![account_a.clone(), account_b.clone()];
         let available: Vec<_> = accounts
             .iter()
-            .filter(|t| !t.protected_models.contains(&normalized_target))
+            .filter(|t| !t.protected_models.contains_key(&normalized_target))
             .collect();
         assert_eq!(available.len(), 2, "阶段1: 两个账号都可用");
 
@@ -838,12 +854,16 @@ mod tests {
         account_a.remaining_quota = Some(40);
         account_a
             .protected_models
-            .insert("claude".to_string());
+            .insert("claude".to_string(), crate::models::account::ModelProtection {
+                reason: "quota_exhausted".to_string(),
+                locked_at: chrono::Utc::now().timestamp(),
+                unlocks_at: None,
+            });
 
         let accounts = vec![account_a.clone(), account_b.clone()];
         let available: Vec<_> = accounts
             .iter()
-            .filter(|t| !t.protected_models.contains(&normalized_target))
+            .filter(|t| !t.protected_models.contains_key(&normalized_target))
             .collect();
         assert_eq!(available.len(), 1, "阶段2: 只有账号 B 可用");
         assert_eq!(available[0].account_id, "account-b");
@@ -852,12 +872,16 @@ mod tests {
         account_b.remaining_quota = Some(30);
         account_b
             .protected_models
-            .insert("claude".to_string());
+            .insert("claude".to_string(), crate::models::account::ModelProtection {
+                reason: "quota_exhausted".to_string(),
+                locked_at: chrono::Utc::now().timestamp(),
+                unlocks_at: None,
+            });
 
         let accounts = vec![account_a.clone(), account_b.clone()];
         let available: Vec<_> = accounts
             .iter()
-            .filter(|t| !t.protected_models.contains(&normalized_target))
+            .filter(|t| !t.protected_models.contains_key(&normalized_target))
             .collect();
         assert_eq!(available.len(), 0, "阶段3: 没有可用账号");
 
@@ -868,7 +892,7 @@ mod tests {
         let accounts = vec![account_a.clone(), account_b.clone()];
         let available: Vec<_> = accounts
             .iter()
-            .filter(|t| !t.protected_models.contains(&normalized_target))
+            .filter(|t| !t.protected_models.contains_key(&normalized_target))
             .collect();
         assert_eq!(available.len(), 1, "阶段4: 账号 A 恢复可用");
         assert_eq!(available[0].account_id, "account-a");
@@ -893,7 +917,7 @@ mod tests {
 
         let all_are_quota_protected = all_protected
             .iter()
-            .all(|a| a.protected_models.contains(&normalized_target));
+            .all(|a| a.protected_models.contains_key(&normalized_target));
 
         assert!(all_are_quota_protected, "所有账号都被配额保护");
 
@@ -915,7 +939,7 @@ mod tests {
 
         let quota_protected_count = mixed
             .iter()
-            .filter(|a| a.protected_models.contains(&normalized_target))
+            .filter(|a| a.protected_models.contains_key(&normalized_target))
             .count();
 
         assert_eq!(quota_protected_count, 1);
@@ -1137,7 +1161,11 @@ mod tests {
             project_id: Some("test-project".to_string()),
             subscription_tier: Some("PRO".to_string()),
             remaining_quota,
-            protected_models: protected_models.iter().map(|s| s.to_string()).collect(),
+            protected_models: protected_models.iter().map(|s| (s.to_string(), crate::models::account::ModelProtection {
+                reason: "quota_exhausted".to_string(),
+                locked_at: chrono::Utc::now().timestamp(),
+                unlocks_at: None,
+            })).collect(),
             health_score: 1.0,
             reset_time: None,
             validation_blocked: false,

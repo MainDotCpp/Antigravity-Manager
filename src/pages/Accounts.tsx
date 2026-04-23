@@ -2,6 +2,7 @@
 
 import {
   Download,
+  HeartPulse,
   LayoutGrid,
   List,
   RefreshCw,
@@ -52,6 +53,8 @@ function Accounts() {
     warmUpAccounts,
     warmUpAccount,
     updateAccountLabel,
+    healthProbeAccounts,
+    isProbing,
   } = useAccountStore();
   const { config, showAllQuotas, toggleShowAllQuotas } = useConfigStore();
 
@@ -81,6 +84,10 @@ function Accounts() {
   const [isWarmuping, setIsWarmuping] = useState(false);
   const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const [errorAccountId, setErrorAccountId] = useState<string | null>(null);
+  const [isProbeConfirmOpen, setIsProbeConfirmOpen] = useState(false);
+  const [probeModelFilter, setProbeModelFilter] = useState<Set<string>>(
+    new Set(["gemini-3-pro-high", "gemini-3-flash", "claude"])
+  );
 
   const handleWarmup = async (accountId: string) => {
     setRefreshingIds((prev) => {
@@ -147,6 +154,49 @@ function Accounts() {
       setIsWarmuping(false);
       setRefreshingIds(new Set());
     }
+  };
+
+  const handleHealthProbe = async () => {
+    setIsProbeConfirmOpen(false);
+    try {
+      const accountIds = selectedIds.size > 0 ? Array.from(selectedIds) : undefined;
+      const modelFilter = probeModelFilter.size < 3 ? Array.from(probeModelFilter) : undefined;
+      const result = await healthProbeAccounts(accountIds, modelFilter);
+      const results = result?.results ?? [];
+      let okCount = 0;
+      let lockedCount = 0;
+      let errorCount = 0;
+      for (const account of results) {
+        for (const model of account.results) {
+          if (model.status === "ok") okCount++;
+          else if (model.status === "locked") lockedCount++;
+          else if (model.status === "error") errorCount++;
+        }
+      }
+      showToast(
+        t("accounts.probe_complete", {
+          ok: okCount,
+          locked: lockedCount,
+          errors: errorCount,
+          defaultValue: `Probe complete: ${okCount} OK, ${lockedCount} locked, ${errorCount} errors`,
+        }),
+        lockedCount > 0 ? "warning" : "success",
+      );
+    } catch (error) {
+      showToast(`${t("common.error")}: ${error}`, "error");
+    }
+  };
+
+  const toggleProbeModel = (model: string) => {
+    setProbeModelFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(model)) {
+        if (next.size > 1) next.delete(model);
+      } else {
+        next.add(model);
+      }
+      return next;
+    });
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1005,6 +1055,28 @@ function Accounts() {
             </span>
           </button>
 
+          <button
+            className={`px-2.5 py-2 bg-emerald-500 text-white text-xs font-medium rounded-lg hover:bg-emerald-600 transition-colors flex items-center gap-1.5 shadow-sm ${isProbing ? "opacity-70 cursor-not-allowed" : ""}`}
+            onClick={() => setIsProbeConfirmOpen(true)}
+            disabled={isProbing}
+            title={
+              selectedIds.size > 0
+                ? t("accounts.probe_selected", { count: selectedIds.size, defaultValue: `Health probe {{count}} selected` })
+                : t("accounts.probe_all", "Health Probe")
+            }
+          >
+            <HeartPulse
+              className={`w-3.5 h-3.5 ${isProbing ? "animate-pulse" : ""}`}
+            />
+            <span className="hidden xl:inline">
+              {isProbing
+                ? t("common.loading")
+                : selectedIds.size > 0
+                  ? t("accounts.probe_selected", { count: selectedIds.size, defaultValue: `Probe {{count}}` })
+                  : t("accounts.probe_all", "Health Probe")}
+            </span>
+          </button>
+
           <label className="flex items-center gap-2 cursor-pointer select-none px-2 py-2 border border-transparent hover:bg-gray-100 dark:hover:bg-base-200 rounded-lg transition-colors" title={t('accounts.show_all_quotas')}>
             <span className="text-xs font-medium text-gray-600 dark:text-gray-300 hidden xl:inline">
               {t('accounts.show_all_quotas')}
@@ -1222,6 +1294,56 @@ function Accounts() {
         onConfirm={handleWarmupAll}
         onCancel={() => setIsWarmupConfirmOpen(false)}
       />
+
+      <ModalDialog
+        isOpen={isProbeConfirmOpen}
+        title={
+          selectedIds.size > 0
+            ? t("accounts.dialog.batch_probe_title", "批量健康探测")
+            : t("accounts.dialog.probe_all_title", "全量健康探测")
+        }
+        type="confirm"
+        confirmText={t("accounts.probe_now", "开始探测")}
+        isDestructive={false}
+        onConfirm={handleHealthProbe}
+        onCancel={() => setIsProbeConfirmOpen(false)}
+      >
+        <div className="px-4 mb-6">
+          <p className="text-gray-500 dark:text-gray-400 text-sm mb-4 leading-relaxed">
+            {selectedIds.size > 0
+              ? t(
+                "accounts.dialog.batch_probe_msg",
+                "确定要为选中的 {{count}} 个账号执行健康探测吗？将向每个模型发送最小测试请求。",
+                { count: selectedIds.size },
+              )
+              : t(
+                "accounts.dialog.probe_all_msg",
+                "确定要为所有账号执行健康探测吗？将向每个模型组发送最小测试请求，自动锁定/解锁模型。",
+              )
+            }
+          </p>
+          <div className="text-xs font-medium text-gray-600 dark:text-gray-300 mb-2">
+            {t("accounts.dialog.probe_model_filter", "选择探测模型：")}
+          </div>
+          <div className="flex flex-col gap-2">
+            {[
+              { id: "gemini-3-pro-high", label: "Gemini Pro" },
+              { id: "gemini-3-flash", label: "Gemini Flash" },
+              { id: "claude", label: "Claude" },
+            ].map(({ id, label }) => (
+              <label key={id} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="checkbox checkbox-xs checkbox-primary"
+                  checked={probeModelFilter.has(id)}
+                  onChange={() => toggleProbeModel(id)}
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">{label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </ModalDialog>
 
       {/* 账号详情弹窗 */}
       <AccountDetailsDialog

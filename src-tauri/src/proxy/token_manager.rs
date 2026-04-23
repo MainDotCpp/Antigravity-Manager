@@ -1,5 +1,6 @@
 // 移除冗余的顶层导入，因为这些在代码中已由 full path 或局部导入处理
 use dashmap::DashMap;
+use serde::Serialize;
 use std::collections::{HashSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -28,7 +29,7 @@ pub struct ProxyToken {
     pub project_id: Option<String>,
     pub subscription_tier: Option<String>, // "FREE" | "PRO" | "ULTRA"
     pub remaining_quota: Option<i32>,      // [FIX #563] Remaining quota for priority sorting
-    pub protected_models: HashSet<String>, // [NEW #621]
+    pub protected_models: std::collections::HashMap<String, crate::models::account::ModelProtection>, // [NEW #621]
     pub health_score: f32,                 // [NEW] 健康分数 (0.0 - 1.0)
     pub reset_time: Option<i64>,           // [NEW] 配额刷新时间戳（用于排序优化）
     pub validation_blocked: bool,          // [NEW] Check for validation block (VALIDATION_REQUIRED temporary block)
@@ -38,8 +39,51 @@ pub struct ProxyToken {
     pub model_limits: HashMap<String, u64>, // [NEW] max_output_tokens per model from quota data
 }
 
+impl ProxyToken {
+    pub fn is_model_blocked(&self, normalized_target: &str, quota_protection_enabled: bool) -> bool {
+        if let Some(protection) = self.protected_models.get(normalized_target) {
+            match protection.reason.as_str() {
+                "validation_required" | "manual" => true,
+                _ => quota_protection_enabled,
+            }
+        } else {
+            false
+        }
+    }
+}
+
+pub const PROBE_MODELS: &[(&str, &str)] = &[
+    ("gemini-3-pro-high", "gemini"),
+    ("gemini-3-flash", "gemini"),
+    ("claude-sonnet-4-6", "claude"),
+    ("claude-opus-4-6-thinking", "claude"),
+];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelProbeResult {
+    pub model: String,
+    pub status: ProbeStatus,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeStatus {
+    Ok,
+    Locked,
+    Skipped,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountProbeResult {
+    pub account_id: String,
+    pub email: String,
+    pub results: Vec<ModelProbeResult>,
+}
+
 pub struct TokenManager {
-    tokens: Arc<DashMap<String, ProxyToken>>, // account_id -> ProxyToken
+    pub(crate) tokens: Arc<DashMap<String, ProxyToken>>, // account_id -> ProxyToken
     current_index: Arc<AtomicUsize>,
     last_used_account: Arc<tokio::sync::Mutex<Option<(String, std::time::Instant)>>>,
     data_dir: PathBuf,
@@ -79,9 +123,12 @@ impl TokenManager {
     pub async fn start_auto_cleanup(&self) {
         let tracker = self.rate_limit_tracker.clone();
         let cancel = self.cancel_token.child_token();
+        let tokens = self.tokens.clone();
+        let data_dir = self.data_dir.clone();
 
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            let mut protection_check_counter: u32 = 0;
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => {
@@ -95,6 +142,45 @@ impl TokenManager {
                                 "Auto-cleanup: Removed {} expired rate limit record(s)",
                                 cleaned
                             );
+                        }
+
+                        // 每 60 秒检查一次 protected_models 中已过期的锁定（4 个 tick）
+                        protection_check_counter += 1;
+                        if protection_check_counter >= 4 {
+                            protection_check_counter = 0;
+                            let now = chrono::Utc::now().timestamp();
+                            let mut expired_entries: Vec<(String, String)> = Vec::new();
+
+                            for entry in tokens.iter() {
+                                for (model, protection) in &entry.value().protected_models {
+                                    if let Some(unlocks_at) = protection.unlocks_at {
+                                        if now >= unlocks_at {
+                                            expired_entries.push((entry.key().clone(), model.clone()));
+                                        }
+                                    }
+                                }
+                            }
+
+                            for (account_id, model_name) in &expired_entries {
+                                // 1. 从内存移除
+                                if let Some(mut token) = tokens.get_mut(account_id) {
+                                    token.protected_models.remove(model_name);
+                                }
+                                // 2. 从磁盘移除
+                                let path = data_dir.join("accounts").join(format!("{}.json", account_id));
+                                if let Ok(content) = std::fs::read_to_string(&path) {
+                                    if let Ok(mut account) = serde_json::from_str::<serde_json::Value>(&content) {
+                                        if let Some(obj) = account.get_mut("protected_models").and_then(|v| v.as_object_mut()) {
+                                            obj.remove(model_name);
+                                        }
+                                        let _ = std::fs::write(&path, serde_json::to_string_pretty(&account).unwrap());
+                                    }
+                                }
+                                tracing::info!(
+                                    "🔓 [Auto-unlock] Account {} model {} protection expired, removed",
+                                    account_id, model_name
+                                );
+                            }
                         }
                     }
                 }
@@ -468,17 +554,31 @@ impl TokenManager {
             .and_then(|q| self.calculate_quota_stats(q));
             // .filter(|&r| r > 0); // 移除 >0 过滤，因为 0% 也是有效数据，只是优先级低
 
-        // 【新增 #621】提取受限模型列表
-        let protected_models: HashSet<String> = account
-            .get("protected_models")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
+        // 【新增 #621】提取受限模型列表（兼容旧数组格式和新对象格式）
+        let protected_models: HashMap<String, crate::models::account::ModelProtection> = {
+            let pm_value = account.get("protected_models");
+            let mut map = HashMap::new();
+            if let Some(arr) = pm_value.and_then(|v| v.as_array()) {
+                // 旧格式: ["model1", "model2"]
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        map.insert(s.to_string(), crate::models::account::ModelProtection {
+                            reason: "legacy_conversion".to_string(),
+                            locked_at: chrono::Utc::now().timestamp(),
+                            unlocks_at: None,
+                        });
+                    }
+                }
+            } else if let Some(obj) = pm_value.and_then(|v| v.as_object()) {
+                // 新格式: { "model1": { reason, locked_at, unlocks_at } }
+                for (k, v) in obj {
+                    if let Ok(protection) = serde_json::from_value::<crate::models::account::ModelProtection>(v.clone()) {
+                        map.insert(k.clone(), protection);
+                    }
+                }
+            }
+            map
+        };
 
         let health_score = self.health_scores.get(&account_id).map(|v| *v).unwrap_or(1.0);
 
@@ -836,19 +936,61 @@ impl TokenManager {
         threshold: i32,
         model_name: &str,
     ) -> Result<bool, String> {
-        // 1. 初始化 protected_models 数组（如果不存在）
-        if account_json.get("protected_models").is_none() {
-            account_json["protected_models"] = serde_json::Value::Array(Vec::new());
+        // 1. 初始化 protected_models 对象（如果不存在或为旧数组格式）
+        if !account_json.get("protected_models").map_or(false, |v| v.is_object()) {
+            // 兼容旧数组格式：迁移为对象
+            let mut migrated = serde_json::Map::new();
+            if let Some(arr) = account_json.get("protected_models").and_then(|v| v.as_array()) {
+                let now = chrono::Utc::now().timestamp();
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        migrated.insert(s.to_string(), serde_json::json!({
+                            "reason": "legacy_conversion",
+                            "locked_at": now,
+                        }));
+                    }
+                }
+            }
+            account_json["protected_models"] = serde_json::Value::Object(migrated);
         }
 
-        let protected_models = account_json["protected_models"].as_array_mut().unwrap();
-
         // 2. 检查是否已存在
-        if !protected_models
-            .iter()
-            .any(|m| m.as_str() == Some(model_name))
-        {
-            protected_models.push(serde_json::Value::String(model_name.to_string()));
+        let already_exists = account_json["protected_models"]
+            .as_object()
+            .map_or(false, |obj| obj.contains_key(model_name));
+
+        if !already_exists {
+            let now = chrono::Utc::now().timestamp();
+
+            // 从 quota.models 中提取该模型的 reset_time 作为 unlocks_at
+            let unlocks_at = account_json
+                .get("quota")
+                .and_then(|q| q.get("models"))
+                .and_then(|m| m.as_array())
+                .and_then(|models| {
+                    models.iter()
+                        .filter(|m| {
+                            m.get("name").and_then(|n| n.as_str())
+                                .map_or(false, |n| n == model_name)
+                        })
+                        .filter_map(|m| m.get("reset_time").and_then(|r| r.as_str()))
+                        .filter(|s| !s.is_empty())
+                        .next()
+                })
+                .and_then(|iso_str| {
+                    chrono::DateTime::parse_from_rfc3339(iso_str)
+                        .ok()
+                        .map(|dt| dt.timestamp())
+                });
+
+            let mut protection = serde_json::json!({
+                "reason": "quota_exhausted",
+                "locked_at": now,
+            });
+            if let Some(ts) = unlocks_at {
+                protection["unlocks_at"] = serde_json::json!(ts);
+            }
+            account_json["protected_models"][model_name] = protection;
 
             tracing::info!(
                 "账号 {} 的模型 {} 因配额受限（{}% <= {}%）已被加入保护列表",
@@ -894,7 +1036,8 @@ impl TokenManager {
         account_json["proxy_disabled_at"] = serde_json::Value::Null;
 
         let threshold = config.threshold_percentage as i32;
-        let mut protected_list = Vec::new();
+        let mut protected_map = serde_json::Map::new();
+        let now = chrono::Utc::now().timestamp();
 
         if let Some(models) = quota.get("models").and_then(|m| m.as_array()) {
             for model in models {
@@ -903,12 +1046,15 @@ impl TokenManager {
 
                 let percentage = model.get("percentage").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                 if percentage <= threshold {
-                    protected_list.push(serde_json::Value::String(name.to_string()));
+                    protected_map.insert(name.to_string(), serde_json::json!({
+                        "reason": "quota_exhausted",
+                        "locked_at": now,
+                    }));
                 }
             }
         }
 
-        account_json["protected_models"] = serde_json::Value::Array(protected_list);
+        account_json["protected_models"] = serde_json::Value::Object(protected_map);
 
         let _ = std::fs::write(account_path, serde_json::to_string_pretty(account_json).unwrap());
 
@@ -973,7 +1119,7 @@ impl TokenManager {
         // 过滤可用 token
         let available: Vec<&ProxyToken> = candidates.iter()
             .filter(|t| !attempted.contains(&t.account_id))
-            .filter(|t| !quota_protection_enabled || !t.protected_models.contains(normalized_target))
+            .filter(|t| !t.is_model_blocked(normalized_target, quota_protection_enabled))
             .collect();
 
         if available.is_empty() { return None; }
@@ -1276,10 +1422,8 @@ impl TokenManager {
                 let is_rate_limited = self
                     .is_rate_limited(&preferred_token.account_id, Some(&normalized_target))
                     .await;
-                let is_quota_protected = quota_protection_enabled
-                    && preferred_token
-                        .protected_models
-                        .contains(&normalized_target);
+                let is_quota_protected = preferred_token
+                        .is_model_blocked(&normalized_target, quota_protection_enabled);
 
                 if !is_rate_limited && !is_quota_protected {
                     tracing::info!(
@@ -1407,14 +1551,12 @@ impl TokenManager {
                             );
                             self.session_accounts.remove(sid);
                         } else if !attempted.contains(&bound_id)
-                            && !(quota_protection_enabled
-                                && bound_token.protected_models.contains(&normalized_target))
+                            && !bound_token.is_model_blocked(&normalized_target, quota_protection_enabled)
                         {
                             // 3. 账号可用且未被标记为尝试失败，优先复用
                             tracing::debug!("Sticky Session: Successfully reusing bound account {} for session {}", bound_token.email, sid);
                             target_token = Some(bound_token.clone());
-                        } else if quota_protection_enabled
-                            && bound_token.protected_models.contains(&normalized_target)
+                        } else if bound_token.is_model_blocked(&normalized_target, quota_protection_enabled)
                         {
                             tracing::debug!("Sticky Session: Bound account {} is quota-protected for model {} [{}], unbinding and switching.", bound_token.email, normalized_target, target_model);
                             self.session_accounts.remove(sid);
@@ -1448,8 +1590,7 @@ impl TokenManager {
                             if !self
                                 .is_rate_limited(&found.account_id, Some(&normalized_target))
                                 .await
-                                && !(quota_protection_enabled
-                                    && found.protected_models.contains(&normalized_target))
+                                && !found.is_model_blocked(&normalized_target, quota_protection_enabled)
                             {
                                 tracing::debug!(
                                     "60s Window: Force reusing last account: {}",
@@ -1554,9 +1695,9 @@ impl TokenManager {
 
                             // 重新尝试选择账号
                             let retry_token = tokens_snapshot.iter()
-                                .find(|t| !attempted.contains(&t.account_id) 
+                                .find(|t| !attempted.contains(&t.account_id)
                                     && !self.is_rate_limited_sync(&t.account_id, Some(&normalized_target))
-                                    && !(quota_protection_enabled && t.protected_models.contains(&normalized_target)));
+                                    && !t.is_model_blocked(&normalized_target, quota_protection_enabled));
 
                             if let Some(t) = retry_token {
                                 tracing::info!(
@@ -1579,7 +1720,7 @@ impl TokenManager {
                                     .iter()
                                     .find(|t| !attempted.contains(&t.account_id)
                                         && !self.is_rate_limited_sync(&t.account_id, Some(&normalized_target))
-                                        && !(quota_protection_enabled && t.protected_models.contains(&normalized_target)));
+                                        && !t.is_model_blocked(&normalized_target, quota_protection_enabled));
 
                                 if let Some(t) = final_token {
                                     tracing::info!(
@@ -2034,7 +2175,7 @@ impl TokenManager {
             }
 
             // 2. 检查是否被配额保护(如果启用)
-            if quota_protection_enabled && token.protected_models.contains(target_model) {
+            if token.is_model_blocked(target_model, quota_protection_enabled) {
                 tracing::debug!(
                     "[Fallback Check] Account {} is quota-protected for model {}, skipping",
                     token.email,
@@ -2614,6 +2755,90 @@ impl TokenManager {
         self.set_validation_block(account_id, block_until, reason).await
     }
 
+    /// 将指定模型加入账号的 protected_models（内存+磁盘持久化）
+    /// 用于 VALIDATION_REQUIRED / quota_exhausted 等场景，锁定触发验证的特定模型而非整个账号
+    pub async fn add_model_protection(&self, account_id: &str, model_name: &str, reason: &str, unlocks_at: Option<i64>) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        let protection = crate::models::account::ModelProtection {
+            reason: reason.to_string(),
+            locked_at: now,
+            unlocks_at,
+        };
+
+        // 1. 更新内存
+        if let Some(mut token) = self.tokens.get_mut(account_id) {
+            token.protected_models.insert(model_name.to_string(), protection.clone());
+        }
+
+        // 2. 持久化到磁盘
+        let path = self.data_dir.join("accounts").join(format!("{}.json", account_id));
+        if !path.exists() {
+            return Err(format!("Account file not found: {:?}", path));
+        }
+
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read account file: {}", e))?;
+        let mut account: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse account JSON: {}", e))?;
+
+        if !account.get("protected_models").map_or(false, |v| v.is_object()) {
+            account["protected_models"] = serde_json::json!({});
+        }
+        account["protected_models"][model_name] = serde_json::json!({
+            "reason": reason,
+            "locked_at": now,
+            "unlocks_at": unlocks_at,
+        });
+
+        std::fs::write(&path, serde_json::to_string_pretty(&account).unwrap())
+            .map_err(|e| format!("Failed to write account file: {}", e))?;
+
+        // 3. 触发账号重新加载，确保全局同步
+        crate::proxy::server::trigger_account_reload(account_id);
+
+        tracing::warn!(
+            "🔒 [PROTECTION] Account {} model {} locked (reason: {}, unlocks_at: {:?})",
+            account_id, model_name, reason, unlocks_at
+        );
+
+        Ok(())
+    }
+
+    /// Remove a model from an account's protected_models (memory + disk)
+    pub async fn remove_model_protection(&self, account_id: &str, model_name: &str) -> Result<(), String> {
+        // 1. Remove from memory
+        if let Some(mut token) = self.tokens.get_mut(account_id) {
+            token.protected_models.remove(model_name);
+        }
+
+        // 2. Remove from disk
+        let path = self.data_dir.join("accounts").join(format!("{}.json", account_id));
+        if !path.exists() {
+            return Err(format!("Account file not found: {:?}", path));
+        }
+
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read account file: {}", e))?;
+        let mut account: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse account JSON: {}", e))?;
+
+        if let Some(obj) = account.get_mut("protected_models").and_then(|v| v.as_object_mut()) {
+            obj.remove(model_name);
+        }
+
+        std::fs::write(&path, serde_json::to_string_pretty(&account).unwrap())
+            .map_err(|e| format!("Failed to write account file: {}", e))?;
+
+        crate::proxy::server::trigger_account_reload(account_id);
+
+        tracing::info!(
+            "🔓 [PROTECTION] Account {} model {} unlocked via probe",
+            account_id, model_name
+        );
+
+        Ok(())
+    }
+
     /// Set is_forbidden status for an account (called when proxy encounters 403)
     /// [CHANGED] 不再永久锁定账号，仅记录日志。403 只触发账号轮换，不做持久化标记。
     pub async fn set_forbidden(&self, account_id: &str, reason: &str) -> Result<(), String> {
@@ -2686,6 +2911,271 @@ impl TokenManager {
         {
             tracing::error!("Failed to write validation log to {:?}: {}", log_path, e);
         }
+    }
+
+    // ===== Health Probe =====
+
+    pub(crate) async fn ensure_fresh_token(&self, account_id: &str) -> Result<(String, String), String> {
+        let token_info = if let Some(entry) = self.tokens.get(account_id) {
+            let t = entry.value();
+            (
+                t.access_token.clone(),
+                t.refresh_token.clone(),
+                t.timestamp,
+                t.expires_in,
+                t.project_id.clone().unwrap_or_else(|| "bamboo-precept-lgxtn".to_string()),
+            )
+        } else {
+            // Account not in token pool (e.g. proxy_disabled) — load from disk
+            let account_path = self.data_dir.join("accounts").join(format!("{}.json", account_id));
+            let content = tokio::fs::read_to_string(&account_path).await
+                .map_err(|e| format!("Account {} not in token pool and file read failed: {}", account_id, e))?;
+            let account: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| format!("Account {} JSON parse failed: {}", account_id, e))?;
+            let refresh_token = account.get("refresh_token")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("Account {} has no refresh_token", account_id))?
+                .to_string();
+            let project_id = account.get("project_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("bamboo-precept-lgxtn")
+                .to_string();
+            // Force refresh by setting timestamp to 0
+            (String::new(), refresh_token, 0, 0, project_id)
+        };
+
+        let (access_token, refresh_token, timestamp, expires_in, project_id) = token_info;
+        let now = chrono::Utc::now().timestamp();
+
+        if now < timestamp + expires_in - 300 {
+            return Ok((access_token, project_id));
+        }
+
+        tracing::info!("[HealthProbe] Token for {} expiring, refreshing...", account_id);
+        match crate::modules::oauth::refresh_access_token(&refresh_token, Some(account_id)).await {
+            Ok(token_response) => {
+                let new_now = chrono::Utc::now().timestamp();
+                if let Some(mut entry) = self.tokens.get_mut(account_id) {
+                    entry.access_token = token_response.access_token.clone();
+                    entry.expires_in = token_response.expires_in;
+                    entry.timestamp = new_now;
+                }
+                let _ = self.save_refreshed_token(account_id, &token_response).await;
+                Ok((token_response.access_token, project_id))
+            }
+            Err(e) => Err(format!("Token refresh failed for {}: {}", account_id, e)),
+        }
+    }
+
+    pub(crate) async fn probe_single_model(
+        &self,
+        account_id: &str,
+        access_token: &str,
+        project_id: &str,
+        model: &str,
+        _provider: &str,
+    ) -> ModelProbeResult {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
+
+        let is_premium = crate::proxy::common::model_mapping::is_premium_gemini_model(model);
+        let user_agent = if is_premium { "antigravity/1.22.2" } else { "antigravity" };
+
+        let url = "https://cloudcode-pa.googleapis.com/v1internal:generateContent";
+        let body = serde_json::json!({
+            "project": project_id,
+            "requestId": format!("probe/{}/{}", account_id.get(..8).unwrap_or(account_id), model),
+            "model": model,
+            "userAgent": user_agent,
+            "requestType": "agent",
+            "request": {
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 10}
+            }
+        });
+
+        let result = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", user_agent)
+            .json(&body)
+            .send()
+            .await;
+
+        match result {
+            Ok(response) => {
+                let status_code = response.status().as_u16();
+                let body_text = response.text().await.unwrap_or_default();
+
+                match status_code {
+                    200 => {
+                        let was_locked = self.tokens.get(account_id)
+                            .map(|t| {
+                                t.protected_models.get(model)
+                                    .map(|p| p.reason == "validation_required")
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+
+                        if was_locked {
+                            if let Err(e) = self.remove_model_protection(account_id, model).await {
+                                tracing::warn!("[HealthProbe] Failed to unlock {}/{}: {}", account_id, model, e);
+                            }
+                        }
+
+                        ModelProbeResult {
+                            model: model.to_string(),
+                            status: ProbeStatus::Ok,
+                            message: if was_locked {
+                                "OK (auto-unlocked)".to_string()
+                            } else {
+                                "OK".to_string()
+                            },
+                        }
+                    }
+                    403 if body_text.contains("VALIDATION_REQUIRED") => {
+                        let _ = self
+                            .add_model_protection(account_id, model, "validation_required", None)
+                            .await;
+                        ModelProbeResult {
+                            model: model.to_string(),
+                            status: ProbeStatus::Locked,
+                            message: "VALIDATION_REQUIRED".to_string(),
+                        }
+                    }
+                    429 => ModelProbeResult {
+                        model: model.to_string(),
+                        status: ProbeStatus::Skipped,
+                        message: "Rate limited (429)".to_string(),
+                    },
+                    _ => {
+                        tracing::warn!(
+                            "[HealthProbe] {}/{} returned HTTP {}: {}",
+                            account_id, model, status_code,
+                            &body_text[..body_text.len().min(300)]
+                        );
+                        ModelProbeResult {
+                            model: model.to_string(),
+                            status: ProbeStatus::Error,
+                            message: format!("HTTP {}", status_code),
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[HealthProbe] {}/{} request failed: {}",
+                    account_id, model, e
+                );
+                ModelProbeResult {
+                    model: model.to_string(),
+                    status: ProbeStatus::Error,
+                    message: format!("Request failed: {}", e),
+                }
+            },
+        }
+    }
+
+    pub async fn health_probe_account(
+        &self,
+        account_id: &str,
+        model_filter: Option<&[String]>,
+    ) -> Result<AccountProbeResult, String> {
+        let email = if let Some(entry) = self.tokens.get(account_id) {
+            entry.email.clone()
+        } else {
+            let account_path = self.data_dir.join("accounts").join(format!("{}.json", account_id));
+            tokio::fs::read_to_string(&account_path).await.ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                .and_then(|v| v.get("email").and_then(|e| e.as_str()).map(|s| s.to_string()))
+                .unwrap_or_else(|| account_id.to_string())
+        };
+
+        let (access_token, project_id) = self.ensure_fresh_token(account_id).await
+            .map_err(|e| {
+                tracing::warn!("[HealthProbe] {} ({}) token error: {}", account_id, email, e);
+                e
+            })?;
+
+        let models_to_probe: Vec<(&str, &str)> = PROBE_MODELS
+            .iter()
+            .filter(|(model, _)| {
+                model_filter
+                    .map(|f| f.iter().any(|m| m == *model))
+                    .unwrap_or(true)
+            })
+            .copied()
+            .collect();
+
+        let mut results = Vec::with_capacity(models_to_probe.len());
+        for (model, provider) in &models_to_probe {
+            let result = self
+                .probe_single_model(account_id, &access_token, &project_id, model, provider)
+                .await;
+            results.push(result);
+        }
+
+        Ok(AccountProbeResult {
+            account_id: account_id.to_string(),
+            email,
+            results,
+        })
+    }
+
+    pub async fn health_probe_accounts_batch(
+        &self,
+        account_ids: Vec<String>,
+        model_filter: Option<Vec<String>>,
+    ) -> Vec<AccountProbeResult> {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
+        let filter = model_filter.map(Arc::new);
+
+        let futures: Vec<_> = account_ids
+            .into_iter()
+            .map(|account_id| {
+                let sem = semaphore.clone();
+                let filter_ref = filter.clone();
+                async move {
+                    let _permit = sem.acquire().await.ok()?;
+                    let filter_slice = filter_ref.as_deref().map(|v| v.as_slice());
+                    match self.health_probe_account(&account_id, filter_slice).await {
+                        Ok(result) => Some(result),
+                        Err(e) => {
+                            tracing::warn!("[HealthProbe] Skipping {}: {}", account_id, e);
+                            None
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        let results: Vec<AccountProbeResult> = futures::future::join_all(futures)
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let (ok, locked, err) = results.iter().fold((0, 0, 0), |(o, l, e), r| {
+            r.results.iter().fold((o, l, e), |(o, l, e), m| match m.status {
+                ProbeStatus::Ok => (o + 1, l, e),
+                ProbeStatus::Locked => (o, l + 1, e),
+                ProbeStatus::Error => (o, l, e + 1),
+                ProbeStatus::Skipped => (o, l, e),
+            })
+        });
+        tracing::info!(
+            "[HealthProbe] Batch complete: {} accounts probed, {} ok, {} locked, {} errors",
+            results.len(), ok, locked, err
+        );
+
+        results
+    }
+
+    pub fn get_all_account_ids(&self) -> Vec<String> {
+        self.tokens.iter().map(|entry| entry.key().clone()).collect()
     }
 }
 
@@ -2922,7 +3412,7 @@ mod tests {
             project_id: None,
             subscription_tier: tier.map(|s| s.to_string()),
             remaining_quota,
-            protected_models: HashSet::new(),
+            protected_models: HashMap::new(),
             health_score,
             reset_time,
             validation_blocked: false,
@@ -3167,7 +3657,7 @@ mod tests {
     fn create_test_token_with_protected(
         email: &str,
         remaining_quota: Option<i32>,
-        protected_models: HashSet<String>,
+        protected_models: HashMap<String, crate::models::account::ModelProtection>,
     ) -> ProxyToken {
         ProxyToken {
             account_id: email.to_string(),
@@ -3234,11 +3724,15 @@ mod tests {
         // P2C 应跳过对目标模型有保护的账号 (quota_protection_enabled = true)
         let manager = TokenManager::new(PathBuf::from("/tmp/test"));
 
-        let mut protected = HashSet::new();
-        protected.insert("claude-sonnet".to_string());
+        let mut protected = HashMap::new();
+        protected.insert("claude-sonnet".to_string(), crate::models::account::ModelProtection {
+            reason: "quota_exhausted".to_string(),
+            locked_at: chrono::Utc::now().timestamp(),
+            unlocks_at: None,
+        });
 
         let protected_account = create_test_token_with_protected("protected@test.com", Some(90), protected);
-        let normal_account = create_test_token_with_protected("normal@test.com", Some(50), HashSet::new());
+        let normal_account = create_test_token_with_protected("normal@test.com", Some(50), HashMap::new());
 
         let candidates = vec![protected_account, normal_account];
         let attempted: HashSet<String> = HashSet::new();

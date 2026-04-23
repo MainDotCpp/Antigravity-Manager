@@ -36,40 +36,30 @@ pub fn determine_retry_strategy(
             RetryStrategy::FixedDelay(Duration::from_millis(200))
         }
 
-        // 429 限流错误
+        // 429 限流错误：有多账号池，优先快速轮换
         429 => {
-            // 优先使用服务端返回的 Retry-After
             if let Some(delay_ms) = crate::proxy::upstream::retry::parse_retry_delay(error_text) {
-                if delay_ms > 60_000 {
-                    // 配额耗尽（如 147 小时）：账号已被 mark_rate_limited_async 锁定，
-                    // 无需等待，立即轮换到下一个账号
-                    tracing::info!("429 with long retryDelay ({}ms), skipping wait and rotating immediately", delay_ms);
+                if delay_ms > 5_000 {
+                    // 长期限流（配额耗尽等）：账号已被 mark_rate_limited_async 锁定，
+                    // 立即轮换到下一个账号
+                    tracing::info!("429 with retryDelay {}ms, rotating immediately", delay_ms);
                     RetryStrategy::FixedDelay(Duration::from_millis(200))
                 } else {
-                    // 短期限流（如 TPM/RPM）：使用 API 返回的延迟时间
-                    let actual_delay = delay_ms.saturating_add(200).min(30_000);
+                    // 短期限流（TPM/RPM）：使用 API 返回的延迟，上限 5s
+                    let actual_delay = delay_ms.saturating_add(100).min(5_000);
                     RetryStrategy::FixedDelay(Duration::from_millis(actual_delay))
                 }
             } else {
-                // 否则使用线性退避：起始 5s，逐步增加
-                RetryStrategy::LinearBackoff { base_ms: 5000 }
+                // 无 retryDelay：快速轮换到下一个账号
+                RetryStrategy::FixedDelay(Duration::from_millis(200))
             }
         }
 
-        // 503 服务不可用 / 529 服务器过载
-        503 | 529 => {
-            // 指数退避：起始 10s，上限 60s (针对 Google 边缘节点过载)
-            RetryStrategy::ExponentialBackoff {
-                base_ms: 10000,
-                max_ms: 60000,
-            }
-        }
+        // 503 服务不可用 / 529 服务器过载：快速轮换账号（不同节点可能正常）
+        503 | 529 => RetryStrategy::FixedDelay(Duration::from_millis(200)),
 
-        // 500 服务器内部错误
-        500 => {
-            // 线性退避：起始 3s
-            RetryStrategy::LinearBackoff { base_ms: 3000 }
-        }
+        // 500 服务器内部错误：快速轮换
+        500 => RetryStrategy::FixedDelay(Duration::from_millis(200)),
 
         // 401/403 认证/权限错误：切换账号前给予极短缓冲
         401 | 403 => RetryStrategy::FixedDelay(Duration::from_millis(200)),
@@ -144,11 +134,10 @@ pub async fn apply_retry_strategy(
 /// 判断是否应该轮换账号
 pub fn should_rotate_account(status_code: u16) -> bool {
     match status_code {
-        // 这些错误是账号级别或特定节点配额的，需要轮换
-        // 404: Google Cloud Code API 模型可用性因账号而异（灰度/权限）
-        429 | 401 | 403 | 404 | 500 => true,
-        // 这些错误通常是协议或服务端全局性、甚至参数错误的，轮换账号通常无意义
-        400 | 503 | 529 => false,
+        // 账号级别或节点级别错误，轮换到其他账号（可能命中不同节点）
+        429 | 401 | 403 | 404 | 500 | 503 | 529 => true,
+        // 400 通常是请求参数错误，轮换账号无意义
+        400 => false,
         _ => false,
     }
 }
