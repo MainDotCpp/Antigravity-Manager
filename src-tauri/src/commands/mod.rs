@@ -921,6 +921,24 @@ pub async fn health_probe_accounts(
     Ok(serde_json::json!({ "results": results }))
 }
 
+/// 手动解锁账号某个模型的保护状态
+#[tauri::command]
+pub async fn unlock_model_protection(
+    account_id: String,
+    model_name: String,
+    proxy_state: tauri::State<'_, crate::commands::proxy::ProxyServiceState>,
+) -> Result<(), String> {
+    let instance_lock = proxy_state.instance.read().await;
+    let instance = instance_lock
+        .as_ref()
+        .ok_or_else(|| "Proxy service not running".to_string())?;
+
+    instance
+        .token_manager
+        .remove_model_protection(&account_id, &model_name)
+        .await
+}
+
 /// 更新账号自定义标签
 #[tauri::command]
 pub async fn update_account_label(account_id: String, label: String) -> Result<(), String> {

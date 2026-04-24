@@ -8,9 +8,10 @@ import { MODEL_CONFIG, sortModels } from '../../config/modelConfig';
 interface AccountDetailsDialogProps {
     account: Account | null;
     onClose: () => void;
+    onUnlock?: (accountId: string, model: string) => Promise<void>;
 }
 
-export default function AccountDetailsDialog({ account, onClose }: AccountDetailsDialogProps) {
+export default function AccountDetailsDialog({ account, onClose, onUnlock }: AccountDetailsDialogProps) {
     const { t } = useTranslation();
     if (!account) return null;
 
@@ -121,6 +122,16 @@ export default function AccountDetailsDialog({ account, onClose }: AccountDetail
                                                     <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500">
                                                         {t('accounts.protection.no_auto_unlock', 'Manual')}
                                                     </span>
+                                                )}
+                                                {onUnlock && (
+                                                    <button
+                                                        onClick={() => onUnlock(account.id, model)}
+                                                        className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors"
+                                                        title={t('accounts.protection.unlock', 'Unlock')}
+                                                    >
+                                                        <Unlock size={10} />
+                                                        {t('accounts.protection.unlock', 'Unlock')}
+                                                    </button>
                                                 )}
                                             </div>
                                         </div>

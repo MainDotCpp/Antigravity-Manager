@@ -513,19 +513,21 @@ pub fn wrap_request(
         inner_request["sessionId"] = json!(crate::proxy::common::session::derive_session_id(account_id_str));
     }
 
-    let sid = session_id.unwrap_or("default");
+    let _sid = session_id.unwrap_or("default");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    // 官方 requestId 格式: agent/{conversationId}/{timestamp_ms}/{turnId}/{turnIndex}
+    let conversation_id = _sid;
+    let turn_id = uuid::Uuid::new_v4().to_string();
     let final_request = json!({
         "project": project_id,
-        // [CHANGED v4.1.24] Structured requestId to match official format
-        "requestId": format!("agent/antigravity/{}/{}", &sid[..sid.len().min(8)], message_count),
+        "requestId": format!("agent/{}/{}/{}/{}", conversation_id, ts, turn_id, message_count),
         "request": inner_request,
         "model": config.final_model,
-        // [FIX] 双标识策略：高级模型使用带版本号的标识
-        "userAgent": if crate::proxy::common::model_mapping::is_premium_gemini_model(&config.final_model) {
-            "antigravity/1.22.2"
-        } else {
-            "antigravity"
-        },
+        // 抓包证实高级模型也使用普通 userAgent
+        "userAgent": "antigravity",
         // [CHANGED v4.1.24] Use "agent" for all non-image requests
         "requestType": if config.request_type == "image_gen" { "image_gen" } else { "agent" }
     });

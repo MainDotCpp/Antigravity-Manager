@@ -482,10 +482,10 @@ fn probe_user_agent_follows_dual_identity() {
 
     for (model, _) in crate::proxy::token_manager::PROBE_MODELS {
         let is_premium = is_premium_gemini_model(model);
-        let expected_ua = if is_premium { "antigravity/1.22.2" } else { "antigravity" };
+        let expected_ua = if is_premium { "antigravity/1.23.2" } else { "antigravity" };
 
         if *model == "gemini-3-pro-high" {
-            assert_eq!(expected_ua, "antigravity/1.22.2", "Premium model should use versioned UA");
+            assert_eq!(expected_ua, "antigravity/1.23.2", "Premium model should use versioned UA");
         } else if *model == "gemini-3-flash" || *model == "claude-sonnet-4-6" || *model == "claude-opus-4-6-thinking" {
             assert_eq!(expected_ua, "antigravity", "Non-premium model should use plain UA");
         }
@@ -694,12 +694,11 @@ async fn integration_probe_batch_first_three_accounts() {
     let count = manager.load_accounts().await.expect("加载账号失败");
     eprintln!("已加载 {} 个账号", count);
 
-    let account_ids: Vec<String> = manager.tokens.iter().take(3).map(|e| e.key().clone()).collect();
+    let account_ids: Vec<String> = manager.tokens.iter().map(|e| e.key().clone()).collect();
     eprintln!("批量探测账号: {:?}", account_ids);
 
-    let filter = vec!["gemini-3-flash".to_string()];
     let results = manager
-        .health_probe_accounts_batch(account_ids.clone(), Some(filter))
+        .health_probe_accounts_batch(account_ids.clone(), None)
         .await;
 
     eprintln!("\n批量探测结果 ({}/{} 个账号成功返回):", results.len(), account_ids.len());
@@ -910,4 +909,188 @@ async fn integration_probe_gemini_31_pro_unavailable() {
 
     eprintln!("\n结论: gemini-3.1-pro {}", if all_failed { "在所有测试账号上均不可用" } else { "在部分账号上可用（非预期）" });
     assert!(all_failed, "gemini-3.1-pro 预期在所有账号上不可用，但有账号返回了 Ok");
+}
+
+#[tokio::test]
+#[ignore]
+async fn integration_diagnose_gemini_31_pro_with_verified_account() {
+    if !real_accounts_available() {
+        eprintln!("跳过: 未找到真实账号数据");
+        return;
+    }
+
+    let data_dir = get_real_data_dir();
+    let manager = TokenManager::new(data_dir.clone());
+    let count = manager.load_accounts().await.expect("加载账号失败");
+    eprintln!("已加载 {} 个账号", count);
+
+    // 收集所有 protected_models 为空（未被锁定）的账号，最多取 10 个
+    let candidate_ids: Vec<(String, String)> = manager.tokens.iter()
+        .filter(|e| e.value().protected_models.is_empty() && !e.value().validation_blocked)
+        .map(|e| (e.key().clone(), e.value().email.clone()))
+        .take(10)
+        .collect();
+
+    eprintln!("候选账号（protected_models 为空）: {} 个\n", candidate_ids.len());
+
+    // 第一阶段：用 gemini-3-flash 快速筛选 token 有效的账号
+    eprintln!("=== 第一阶段: gemini-3-flash 连通性筛选 ===\n");
+
+    let prod_url = "https://cloudcode-pa.googleapis.com/v1internal:generateContent";
+    let mut live_accounts: Vec<(String, String, String, String)> = Vec::new(); // (id, email, token, project_id)
+
+    for (aid, email) in &candidate_ids {
+        let token_result = manager.ensure_fresh_token(aid).await;
+        let (access_token, project_id) = match token_result {
+            Ok(tp) => tp,
+            Err(e) => {
+                eprintln!("[✗] {} — token 刷新失败: {}", email, e);
+                continue;
+            }
+        };
+
+        let body = serde_json::json!({
+            "project": project_id,
+            "model": "gemini-3-flash",
+            "userAgent": "antigravity",
+            "requestType": "agent",
+            "request": {
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 5}
+            }
+        });
+
+        let output = std::process::Command::new("curl")
+            .args([
+                "-s", "--max-time", "15",
+                "-X", "POST", prod_url,
+                "-H", &format!("Authorization: Bearer {}", access_token),
+                "-H", "Content-Type: application/json",
+                "-H", "User-Agent: antigravity",
+                "-w", "\n__HTTP_CODE__%{http_code}",
+                "-d", &serde_json::to_string(&body).unwrap(),
+            ])
+            .output();
+
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let parts: Vec<&str> = stdout.rsplitn(2, "__HTTP_CODE__").collect();
+                let http_code = parts.first().unwrap_or(&"???").trim();
+
+                if http_code == "200" {
+                    eprintln!("[✓] {} — flash OK", email);
+                    live_accounts.push((aid.clone(), email.clone(), access_token, project_id));
+                    if live_accounts.len() >= 3 {
+                        break;
+                    }
+                } else {
+                    let response_body = parts.last().unwrap_or(&"").trim();
+                    let reason = serde_json::from_str::<serde_json::Value>(response_body)
+                        .ok()
+                        .and_then(|v| v["error"]["message"].as_str().map(|s| s[..s.len().min(60)].to_string()))
+                        .unwrap_or_default();
+                    eprintln!("[✗] {} — HTTP {} {}", email, http_code, reason);
+                }
+            }
+            Err(e) => eprintln!("[✗] {} — curl error: {}", email, e),
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    if live_accounts.is_empty() {
+        eprintln!("\n未找到任何 token 有效的账号，测试终止");
+        return;
+    }
+
+    eprintln!("\n=== 第二阶段: gemini-3.1-pro-high / pro-low 探测 ===\n");
+    eprintln!("使用 {} 个存活账号测试\n", live_accounts.len());
+
+    let models = ["gemini-3.1-pro-high", "gemini-3.1-pro-low"];
+    let endpoints = [
+        ("SANDBOX", "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:generateContent"),
+        ("DAILY", "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"),
+        ("PROD", prod_url),
+    ];
+
+    for (aid, email, access_token, project_id) in &live_accounts {
+        eprintln!("--- {} ---", email);
+        for (ep_name, ep_url) in &endpoints {
+            for model in &models {
+                let body = serde_json::json!({
+                    "project": project_id,
+                    "requestId": format!("probe/{}/{}", &aid[..8], model),
+                    "model": model,
+                    "userAgent": "antigravity/1.23.2",
+                    "requestType": "agent",
+                    "request": {
+                        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                        "generationConfig": {"maxOutputTokens": 10}
+                    }
+                });
+
+                let output = std::process::Command::new("curl")
+                    .args([
+                        "-s", "--max-time", "20",
+                        "-X", "POST", *ep_url,
+                        "-H", &format!("Authorization: Bearer {}", access_token),
+                        "-H", "Content-Type: application/json",
+                        "-H", "User-Agent: antigravity/1.23.2",
+                        "-w", "\n__HTTP_CODE__%{http_code}",
+                        "-d", &serde_json::to_string(&body).unwrap(),
+                    ])
+                    .output();
+
+                match output {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let parts: Vec<&str> = stdout.rsplitn(2, "__HTTP_CODE__").collect();
+                        let http_code = parts.first().unwrap_or(&"???").trim();
+                        let response_body = parts.last().unwrap_or(&"").trim();
+
+                        let icon = match http_code {
+                            "200" => "✓",
+                            "429" => "⏳",
+                            "503" => "⚡",
+                            _ => "✗",
+                        };
+
+                        eprint!("[{}] {} | {} — HTTP {}", icon, ep_name, model, http_code);
+
+                        if http_code == "200" {
+                            eprintln!(" — OK ({} bytes)", response_body.len());
+                            // 打印完整响应体，验证内容是否为正常的模型生成结果
+                            if let Ok(resp_json) = serde_json::from_str::<serde_json::Value>(response_body) {
+                                let pretty = serde_json::to_string_pretty(&resp_json).unwrap_or_default();
+                                eprintln!("    >>> 完整响应体 <<<\n{}\n    >>> END <<<", pretty);
+                            } else {
+                                eprintln!("    >>> 原始响应（非JSON）<<<\n{}\n    >>> END <<<", &response_body[..response_body.len().min(500)]);
+                            }
+                        } else if !response_body.is_empty() {
+                            if let Ok(err) = serde_json::from_str::<serde_json::Value>(response_body) {
+                                let msg = err["error"]["message"].as_str().unwrap_or("?");
+                                let reason = err["error"]["details"][0]["reason"].as_str().unwrap_or("");
+                                if !reason.is_empty() {
+                                    eprintln!(" ({})", reason);
+                                } else {
+                                    eprintln!(" — {}", &msg[..msg.len().min(120)]);
+                                }
+                            } else {
+                                eprintln!("");
+                            }
+                        } else {
+                            eprintln!("");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[✗] {} | {} — curl error: {}", ep_name, model, e);
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(800));
+            }
+        }
+        eprintln!("");
+    }
 }

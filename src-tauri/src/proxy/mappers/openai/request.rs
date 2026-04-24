@@ -728,10 +728,16 @@ pub fn transform_openai_request(
         inner_request["sessionId"] = json!(crate::proxy::common::session::derive_session_id(&t.account_id));
     }
 
+    // [CHANGED v4.1.32] requestId 对齐官方格式: agent/{conversationId}/{timestamp_ms}/{turnId}/{turnIndex}
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let turn_id = uuid::Uuid::new_v4().to_string();
+
     let final_body = json!({
         "project": project_id,
-        // [CHANGED v4.1.24] Structured requestId: agent/<session>/<turn> to match official format
-        "requestId": format!("agent/antigravity/{}/{}", &session_id[..session_id.len().min(8)], message_count),
+        "requestId": format!("agent/{}/{}/{}/{}", session_id, ts, turn_id, message_count),
         "request": inner_request,
         "model": config.final_model,
         "userAgent": "antigravity",

@@ -1202,6 +1202,10 @@ function Accounts() {
       <AccountDetailsDialog
         account={detailsAccount}
         onClose={() => setDetailsAccount(null)}
+        onUnlock={async (accountId, model) => {
+          await invoke('unlock_model_protection', { accountId, modelName: model });
+          await fetchAccounts();
+        }}
       />
       <DeviceFingerprintDialog
         account={deviceAccount}
@@ -1349,6 +1353,10 @@ function Accounts() {
       <AccountDetailsDialog
         account={detailsAccount}
         onClose={() => setDetailsAccount(null)}
+        onUnlock={async (accountId, model) => {
+          await invoke('unlock_model_protection', { accountId, modelName: model });
+          await fetchAccounts();
+        }}
       />
 
       {/* 账号错误详情弹窗 */}

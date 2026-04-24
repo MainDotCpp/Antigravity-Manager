@@ -656,14 +656,17 @@ pub fn transform_claude_request_in(
         inner_request["sessionId"] = json!(crate::proxy::common::session::derive_session_id(account_id));
     }
 
-    // 生成 requestId
-    // [CHANGED v4.1.24] Structured requestId to match official format
-    let request_id = format!("agent/antigravity/{}/{}", &session_id[..session_id.len().min(8)], message_count);
+    // [CHANGED v4.1.32] requestId 对齐官方格式: agent/{conversationId}/{timestamp_ms}/{turnId}/{turnIndex}
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let turn_id = uuid::Uuid::new_v4().to_string();
 
     // 构建最终请求体
     let mut body = json!({
         "project": project_id,
-        "requestId": request_id,
+        "requestId": format!("agent/{}/{}/{}/{}", session_id, ts, turn_id, message_count),
         "request": inner_request,
         "model": config.final_model,
         "userAgent": "antigravity",

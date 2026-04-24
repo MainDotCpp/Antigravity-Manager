@@ -463,6 +463,10 @@ impl AxumServer {
             .route("/accounts/send-hi", post(admin_send_hi))
             .route("/accounts/refresh", post(admin_refresh_all_quotas))
             .route("/accounts/health-probe", post(admin_health_probe))
+            .route(
+                "/accounts/:accountId/model-protection/:modelName",
+                delete(admin_unlock_model_protection),
+            )
             .route("/accounts/:accountId", delete(admin_delete_account))
             .route("/accounts/:accountId/bind-device", post(admin_bind_device))
             .route(
@@ -1500,6 +1504,23 @@ async fn admin_health_probe(
         .await;
 
     Ok(Json(HealthProbeResponse { results }))
+}
+
+async fn admin_unlock_model_protection(
+    State(state): State<AppState>,
+    axum::extract::Path((account_id, model_name)): axum::extract::Path<(String, String)>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    state
+        .token_manager
+        .remove_model_protection(&account_id, &model_name)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: e }),
+            )
+        })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn admin_send_hi(

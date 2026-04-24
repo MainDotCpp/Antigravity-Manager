@@ -521,6 +521,7 @@ pub fn run() {
             commands::warm_up_all_accounts,
             commands::warm_up_account,
             commands::health_probe_accounts,
+            commands::unlock_model_protection,
             commands::update_account_label,
             // HTTP API settings commands
             commands::get_http_api_settings,

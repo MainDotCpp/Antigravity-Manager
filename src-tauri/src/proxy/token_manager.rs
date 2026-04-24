@@ -871,9 +871,8 @@ impl TokenManager {
         };
 
         // Keep requested model as top priority, then fallback across the same family.
+        // Note: -preview variants return 404 on all endpoints (verified 2026-04-24), excluded.
         push(&model);
-        push("gemini-3.1-pro-preview");
-        push("gemini-3-pro-preview");
         push("gemini-3.1-pro-high");
         push("gemini-3-pro-high");
         push("gemini-3.1-pro-low");
@@ -2981,101 +2980,136 @@ impl TokenManager {
             .unwrap_or_default();
 
         let is_premium = crate::proxy::common::model_mapping::is_premium_gemini_model(model);
-        let user_agent = if is_premium { "antigravity/1.22.2" } else { "antigravity" };
+        let user_agent = "antigravity";
 
-        let url = "https://cloudcode-pa.googleapis.com/v1internal:generateContent";
+        // 官方抓包证实只使用 PROD endpoint，streamGenerateContent（非 generateContent）
+        let endpoints = [
+            "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+        ];
+
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        // 官方 requestId 格式: agent/{conversationId}/{timestamp_ms}/{turnId}/{turnIndex}
+        let conversation_id = uuid::Uuid::new_v4().to_string();
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let session_id = crate::proxy::common::session::derive_session_id(account_id);
+
         let body = serde_json::json!({
             "project": project_id,
-            "requestId": format!("probe/{}/{}", account_id.get(..8).unwrap_or(account_id), model),
+            "requestId": format!("agent/{}/{}/{}/1", conversation_id, ts, turn_id),
             "model": model,
             "userAgent": user_agent,
             "requestType": "agent",
             "request": {
                 "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
-                "generationConfig": {"maxOutputTokens": 10}
+                "generationConfig": {"maxOutputTokens": 10},
+                "sessionId": session_id
             }
         });
 
-        let result = client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", access_token))
-            .header("Content-Type", "application/json")
-            .header("User-Agent", user_agent)
-            .json(&body)
-            .send()
-            .await;
+        let mut last_status_code = 0u16;
+        let mut last_body_text = String::new();
 
-        match result {
-            Ok(response) => {
-                let status_code = response.status().as_u16();
-                let body_text = response.text().await.unwrap_or_default();
+        for url in &endpoints {
+            let result = client
+                .post(*url)
+                .header("Authorization", format!("Bearer {}", access_token))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", user_agent)
+                .json(&body)
+                .send()
+                .await;
 
-                match status_code {
-                    200 => {
-                        let was_locked = self.tokens.get(account_id)
-                            .map(|t| {
-                                t.protected_models.get(model)
-                                    .map(|p| p.reason == "validation_required")
-                                    .unwrap_or(false)
-                            })
-                            .unwrap_or(false);
+            match result {
+                Ok(response) => {
+                    let status_code = response.status().as_u16();
+                    let body_text = response.text().await.unwrap_or_default();
 
-                        if was_locked {
-                            if let Err(e) = self.remove_model_protection(account_id, model).await {
-                                tracing::warn!("[HealthProbe] Failed to unlock {}/{}: {}", account_id, model, e);
+                    match status_code {
+                        200 => {
+                            let was_locked = self.tokens.get(account_id)
+                                .map(|t| {
+                                    t.protected_models.get(model)
+                                        .map(|p| p.reason == "validation_required")
+                                        .unwrap_or(false)
+                                })
+                                .unwrap_or(false);
+
+                            if was_locked {
+                                if let Err(e) = self.remove_model_protection(account_id, model).await {
+                                    tracing::warn!("[HealthProbe] Failed to unlock {}/{}: {}", account_id, model, e);
+                                }
                             }
-                        }
 
-                        ModelProbeResult {
-                            model: model.to_string(),
-                            status: ProbeStatus::Ok,
-                            message: if was_locked {
-                                "OK (auto-unlocked)".to_string()
-                            } else {
-                                "OK".to_string()
-                            },
+                            return ModelProbeResult {
+                                model: model.to_string(),
+                                status: ProbeStatus::Ok,
+                                message: if was_locked {
+                                    "OK (auto-unlocked)".to_string()
+                                } else {
+                                    "OK".to_string()
+                                },
+                            };
                         }
-                    }
-                    403 if body_text.contains("VALIDATION_REQUIRED") => {
-                        let _ = self
-                            .add_model_protection(account_id, model, "validation_required", None)
-                            .await;
-                        ModelProbeResult {
-                            model: model.to_string(),
-                            status: ProbeStatus::Locked,
-                            message: "VALIDATION_REQUIRED".to_string(),
+                        403 if body_text.contains("VALIDATION_REQUIRED") => {
+                            let _ = self
+                                .add_model_protection(account_id, model, "validation_required", None)
+                                .await;
+                            return ModelProbeResult {
+                                model: model.to_string(),
+                                status: ProbeStatus::Locked,
+                                message: "VALIDATION_REQUIRED".to_string(),
+                            };
                         }
-                    }
-                    429 => ModelProbeResult {
-                        model: model.to_string(),
-                        status: ProbeStatus::Skipped,
-                        message: "Rate limited (429)".to_string(),
-                    },
-                    _ => {
-                        tracing::warn!(
-                            "[HealthProbe] {}/{} returned HTTP {}: {}",
-                            account_id, model, status_code,
-                            &body_text[..body_text.len().min(300)]
-                        );
-                        ModelProbeResult {
-                            model: model.to_string(),
-                            status: ProbeStatus::Error,
-                            message: format!("HTTP {}", status_code),
+                        // 503 (capacity) and 429 (rate limit): try next endpoint before giving up
+                        503 | 429 => {
+                            last_status_code = status_code;
+                            last_body_text = body_text;
+                        }
+                        _ => {
+                            last_status_code = status_code;
+                            last_body_text = body_text;
                         }
                     }
                 }
+                Err(e) => {
+                    tracing::warn!("[HealthProbe] {}/{} @ {} failed: {}", account_id, model, url, e);
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    "[HealthProbe] {}/{} request failed: {}",
-                    account_id, model, e
-                );
+        }
+
+        // All endpoints tried — return best classification from last response
+        match last_status_code {
+            429 => ModelProbeResult {
+                model: model.to_string(),
+                status: ProbeStatus::Skipped,
+                message: "Rate limited (429)".to_string(),
+            },
+            _ => {
+                if last_status_code > 0 {
+                    tracing::warn!(
+                        "[HealthProbe] {}/{} all endpoints returned HTTP {}: {}",
+                        account_id, model, last_status_code,
+                        &last_body_text[..last_body_text.len().min(300)]
+                    );
+                }
+                let message = if last_status_code > 0 {
+                    format!("HTTP {}", last_status_code)
+                } else {
+                    "All endpoints unreachable".to_string()
+                };
+                let unlocks_at = chrono::Utc::now().timestamp() + 86400;
+                if let Err(e) = self.add_model_protection(account_id, model, "probe_error", Some(unlocks_at)).await {
+                    tracing::warn!("[HealthProbe] Failed to lock {}/{} after error: {}", account_id, model, e);
+                }
                 ModelProbeResult {
                     model: model.to_string(),
                     status: ProbeStatus::Error,
-                    message: format!("Request failed: {}", e),
+                    message,
                 }
-            },
+            }
         }
     }
 
