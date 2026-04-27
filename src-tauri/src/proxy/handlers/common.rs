@@ -36,6 +36,12 @@ pub fn determine_retry_strategy(
             RetryStrategy::FixedDelay(Duration::from_millis(200))
         }
 
+        // [FIX] 400 错误：处理由于节点 IP 定位限制引起的 FAILED_PRECONDITION 错误，给予短时重试（期望路由切换）
+        400 if error_text.contains("User location is not supported") => {
+            tracing::info!("400 with 'User location is not supported', retrying due to upstream IP block");
+            RetryStrategy::FixedDelay(Duration::from_millis(300))
+        }
+
         // 429 限流错误：有多账号池，优先快速轮换
         429 => {
             if let Some(delay_ms) = crate::proxy::upstream::retry::parse_retry_delay(error_text) {
